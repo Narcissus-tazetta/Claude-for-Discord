@@ -96,7 +96,10 @@ async def ask_claude(messages: list[dict]) -> str:
         max_tokens=1500,
         messages=messages,
     )
-    return response.content[0].text
+    # content[0] isn't reliably the text block: extended-thinking models can prepend a
+    # ThinkingBlock, which has no .text attribute.
+    text_blocks = [block.text for block in response.content if block.type == "text"]
+    return "\n".join(text_blocks) if text_blocks else "(応答にテキストが含まれていませんでした)"
 
 
 async def send_chunked(interaction: discord.Interaction, header: str, text: str, ephemeral: bool):
