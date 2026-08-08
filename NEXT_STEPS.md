@@ -8,15 +8,19 @@
 ## Phase 1: Discord 側の準備（15分）
 
 - [ ] [Discord Developer Portal](https://discord.com/developers/applications) で **New Application** を作成
-- [ ] **Bot** タブ → **Public Bot** を **OFF** にする
+- [ ] **Installation** タブ → **Install Link** を **None** に設定する
+  - ⚠️ **これを先にやらないと、後で Public Bot を OFF にしようとした時に `Cannot have install fields on a private application.` というエラーで弾かれます。順番が重要**
+- [ ] **Installation** タブ → **User Install** にチェック
+- [ ] **Installation** タブ → **Install Contexts** で `Guilds` / `Bot's DM` / `Private Channels` を全部チェック
+- [ ] Scopes に `applications.commands` を指定
+- [ ] **Bot** タブ → **Public Bot** を **OFF** にする（Install Link を None にした後なら成功するはず）
   - ⚠️ これを忘れると他人がアプリをインストールできる状態になります
 - [ ] **Bot** タブ → **Reset Token** でトークンを取得し、安全な場所に控える
   - ⚠️ 画面を離れると二度と表示されません。紛失したら再発行し直しになります
   - ⚠️ このトークンは**絶対にGitHubにコミットしない**（`.env` は `.gitignore` 済み）
-- [ ] **Installation** タブ → **User Install** にチェック
-- [ ] **Installation** タブ → **Install Contexts** で `Guilds` / `Bot's DM` / `Private Channels` を全部チェック
-- [ ] Scopes に `applications.commands` を指定
-- [ ] 生成されたインストールリンクから、自分のアカウントにアプリを追加
+- [ ] **OAuth2** タブ → **OAuth2 URL Generator** で `applications.commands` にチェックし、生成されたURLを**自分で**開いて自分のアカウントに追加する
+  - ℹ️ Install Link を None にした時点で、Installationタブの「共有用リンク」表示は消えます（壊れたわけではなく仕様）。自分のアカウントへの追加はこのURL Generator経由で行います
+  - このURLはオーナー（自分）だけが認可できるので、他人に共有しても意味はありません
 - [ ] 自分のDiscordユーザーIDを取得
   - 設定 → 詳細設定 → **開発者モード** をON
   - 自分のアイコンを右クリック → **ユーザーIDをコピー**

@@ -40,15 +40,20 @@ Discordの **User Install（ユーザーインストール）** に対応して�
 ### 1. Discord アプリケーションを作成する
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) を開き、**New Application** でアプリを作成します。
-2. **Bot** タブ:
-   - **Public Bot** を **OFF** にします。これで他人が自分のアカウントにこのアプリをインストールできなくなります。
-   - **Reset Token** を押してBotトークンを取得し、控えておきます（この画面を離れると再表示できません）。
-   - Message Content Intent は**基本的に不要**です。このBotは通常のメッセージを購読せず、スラッシュコマンドと右クリックメニュー経由でのみ動作します（前述の「深い履歴の遡り」を使いたい場合のみ有効化）。
-3. **Installation** タブ:
+2. **Installation** タブ（先にこちらから設定します。順番が重要です）:
+   - **Install Link** を **None** に設定します。ここを設定しておかないと、次の手順で Public Bot を OFF にしようとした際に `Cannot have install fields on a private application.` というエラーになります。
    - **Installation Contexts** で **User Install** にチェックを入れます。
    - **Default Install Settings** の **Install Contexts** で `Guilds` / `Bot's DM` / `Private Channels` の3つすべてにチェックを入れます。
    - Scopes は `applications.commands` を指定します。
-4. 生成されたインストールリンクを開き、自分のDiscordアカウントにアプリを追加します。
+3. **Bot** タブ:
+   - **Public Bot** を **OFF** にします。これで他人が自分のアカウントにこのアプリをインストールできなくなります（Install Link を None にした後でないとOFFにできません）。
+   - **Reset Token** を押してBotトークンを取得し、控えておきます（この画面を離れると再表示できません）。
+   - Message Content Intent は**基本的に不要**です。このBotは通常のメッセージを購読せず、スラッシュコマンドと右クリックメニュー経由でのみ動作します（前述の「深い履歴の遡り」を使いたい場合のみ有効化）。
+4. **OAuth2** タブ → **OAuth2 URL Generator**:
+   - **Install Link を None にした時点で、Installation タブの「共有用インストールリンク」は表示されなくなります。** これは仕様どおりで、壊れているわけではありません。
+   - 代わりにこのURL Generatorで `applications.commands` スコープにチェックを入れ、User Install用に生成されたURLをコピーします。
+   - そのURLを**自分自身が**ブラウザで開いてDiscordアカウントに追加します。これはアプリのオーナー（またはチームメンバー）自身が認可する操作なので、Public BotがOFFのままでも成功します。他人が同じURLを開いても認可はできません。
+   - このURLを公開のチャンネルなどに貼る必要はありません（貼っても第三者は使えませんが、念のため自分だけで使ってください）。
 
 > **セキュリティ上の注意**
 > `Public Bot` の OFF は、あくまで「他人がこのアプリを自分のアカウントにインストールできるか」を制御するだけです。User Install されたコマンドは、同じサーバーやグループDMにいる別のユーザーからも見えてしまう場合があります。**実際にアクセスを遮断しているのは `bot.py` 内の許可リスト（`ALLOWED_USER_IDS`）です。** この判定を外すと、あなたのAPIキーが第三者に使われる状態になります。
