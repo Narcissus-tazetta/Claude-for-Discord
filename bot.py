@@ -2,6 +2,7 @@ import base64
 import logging
 import os
 import types
+from collections import OrderedDict
 import discord
 from discord import app_commands
 from aiohttp import web
@@ -24,6 +25,9 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
 CLAUDE_MAX_TOKENS = int(os.environ.get("CLAUDE_MAX_TOKENS", "4096"))
 HISTORY_DEPTH = 6
 DISCORD_CHUNK_LIMIT = 1900
+# Regenerate cache: how many past answers we keep enough state on to redo. Bounded so a
+# long-running bot doesn't accumulate unbounded memory; oldest entries drop first.
+MAX_REGEN_RECORDS = 200
 
 # Haiku 4.5 predates adaptive thinking / effort — sending either param to it returns a 400.
 # (Verified against the Models API: its `thinking.types.adaptive` and every `effort` level
@@ -67,6 +71,34 @@ if not ALLOWED_USER_IDS:
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 user_preferences: dict[int, bool] = {}  # user_id -> default ephemeral
 user_model_prefs: dict[int, dict] = {}  # user_id -> {"model": str, "thinking": bool, "effort": str}
+
+# Lets "regenerate" replay the exact request that produced a given answer. Keyed by the
+# first chunk's message id; regen_index maps every chunk's message id to that key so a
+# right-click on any chunk of a multi-message answer finds the same record.
+regen_records: "OrderedDict[int, dict]" = OrderedDict()
+regen_index: dict[int, int] = {}
+
+
+def cache_regen_record(
+    chunk_messages: list[discord.Message], messages: list[dict], user_id: int, header: str, ephemeral: bool
+):
+    if not chunk_messages:
+        return
+    record_id = chunk_messages[0].id
+    regen_records[record_id] = {
+        "messages": messages,
+        "user_id": user_id,
+        "header": header,
+        "chunks": chunk_messages,
+        "ephemeral": ephemeral,
+    }
+    for m in chunk_messages:
+        regen_index[m.id] = record_id
+    regen_records.move_to_end(record_id)
+    while len(regen_records) > MAX_REGEN_RECORDS:
+        _, old_record = regen_records.popitem(last=False)
+        for m in old_record["chunks"]:
+            regen_index.pop(m.id, None)
 
 
 def get_model_prefs(user_id: int) -> dict:
@@ -317,13 +349,19 @@ async def ask_claude(messages: list[dict], user_id: int) -> str:
     return text
 
 
-async def send_chunked(interaction: discord.Interaction, header: str, text: str, ephemeral: bool):
-    full = header + text
-    chunks = [full[i:i + DISCORD_CHUNK_LIMIT] for i in range(0, len(full), DISCORD_CHUNK_LIMIT)] or [""]
+def chunk_text(full: str) -> list[str]:
+    return [full[i:i + DISCORD_CHUNK_LIMIT] for i in range(0, len(full), DISCORD_CHUNK_LIMIT)] or [""]
+
+
+async def send_chunked(interaction: discord.Interaction, header: str, text: str, ephemeral: bool) -> list[discord.Message]:
+    chunks = chunk_text(header + text)
+    sent = []
     # followup.send() does NOT inherit the ephemeral flag from defer(); every chunk has to
-    # carry it or the tail of a long answer leaks into the channel.
+    # carry it or the tail of a long answer leaks into the channel. wait=True is needed to
+    # get the Message back (for the regenerate cache) instead of None.
     for chunk in chunks:
-        await interaction.followup.send(chunk, ephemeral=ephemeral)
+        sent.append(await interaction.followup.send(chunk, ephemeral=ephemeral, wait=True))
+    return sent
 
 
 async def report_error(interaction: discord.Interaction, exc: Exception, ephemeral: bool):
@@ -462,8 +500,11 @@ async def ask_claude_command(
                 return
         content.append(text_block(prompt))
 
-        answer = await ask_claude([{"role": "user", "content": content}], interaction.user.id)
-        await send_chunked(interaction, f"**Q:** {prompt}\n\n**A:**\n", answer, is_ephemeral)
+        request_messages = [{"role": "user", "content": content}]
+        answer = await ask_claude(request_messages, interaction.user.id)
+        header = f"**Q:** {prompt}\n\n**A:**\n"
+        sent = await send_chunked(interaction, header, answer, is_ephemeral)
+        cache_regen_record(sent, request_messages, interaction.user.id, header, is_ephemeral)
     except Exception as e:
         await report_error(interaction, e, is_ephemeral)
 
@@ -487,7 +528,9 @@ class ContinuePromptModal(discord.ui.Modal, title="Claudeに続けて聞く"):
                 history + [{"role": "user", "content": [text_block(str(self.prompt))]}]
             )
             answer = await ask_claude(history, interaction.user.id)
-            await send_chunked(interaction, f"**Q:** {self.prompt}\n\n**A:**\n", answer, is_ephemeral)
+            header = f"**Q:** {self.prompt}\n\n**A:**\n"
+            sent = await send_chunked(interaction, header, answer, is_ephemeral)
+            cache_regen_record(sent, history, interaction.user.id, header, is_ephemeral)
         except Exception as e:
             await report_error(interaction, e, is_ephemeral)
 
@@ -499,6 +542,60 @@ async def continue_with_claude(interaction: discord.Interaction, message: discor
     if not is_allowed(interaction):
         return await deny(interaction)
     await interaction.response.send_modal(ContinuePromptModal(target_message=message))
+
+
+@client.tree.context_menu(name="Claudeの回答を再生成")
+@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+async def regenerate_claude_answer(interaction: discord.Interaction, message: discord.Message):
+    if not is_allowed(interaction):
+        return await deny(interaction)
+    if client.user is None or message.author.id != client.user.id:
+        return await interaction.response.send_message(
+            "この操作はClaudeの回答メッセージにのみ使用できます。", ephemeral=True
+        )
+
+    record_id = regen_index.get(message.id)
+    record = regen_records.get(record_id) if record_id is not None else None
+    if record is None:
+        return await interaction.response.send_message(
+            "この回答は再生成できません（Botの再起動または時間経過によりキャッシュが失われています）。",
+            ephemeral=True,
+        )
+
+    # Regenerate under the clicking user's own model/effort prefs, not whoever originally
+    # asked — that way switching model in /settings then hitting regenerate actually does
+    # something. The prompt/history itself stays exactly as originally sent.
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        answer = await ask_claude(record["messages"], interaction.user.id)
+        chunks = chunk_text(record["header"] + answer)
+        old_chunks = record["chunks"]
+
+        edit_failed = False
+        for i, chunk_msg in enumerate(old_chunks):
+            content = chunks[i] if i < len(chunks) else "*(再生成後は不要になりました)*"
+            try:
+                await chunk_msg.edit(content=content)
+            except discord.HTTPException as e:
+                edit_failed = True
+                log.warning("regenerate: failed to edit chunk %s: %s", chunk_msg.id, e)
+
+        new_chunks = list(old_chunks[: len(chunks)])
+        for extra in chunks[len(old_chunks):]:
+            new_chunks.append(await interaction.followup.send(extra, ephemeral=record["ephemeral"], wait=True))
+
+        cache_regen_record(new_chunks, record["messages"], interaction.user.id, record["header"], record["ephemeral"])
+
+        if edit_failed:
+            await interaction.followup.send(
+                "🔄 再生成しましたが、一部のメッセージは編集期限切れのため上書きできませんでした。",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send("🔄 再生成しました。", ephemeral=True)
+    except Exception as e:
+        await report_error(interaction, e, True)
 
 
 client.run(DISCORD_TOKEN)
