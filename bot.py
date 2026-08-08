@@ -2,6 +2,7 @@ import logging
 import os
 import discord
 from discord import app_commands
+from aiohttp import web
 import anthropic
 from dotenv import load_dotenv
 
@@ -29,6 +30,10 @@ claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 user_preferences: dict[int, bool] = {}  # user_id -> default ephemeral
 
 
+async def health(request):
+    return web.Response(text="ok")
+
+
 class MyClient(discord.Client):
     def __init__(self):
         super().__init__(intents=discord.Intents.default())
@@ -36,6 +41,18 @@ class MyClient(discord.Client):
 
     async def setup_hook(self):
         await self.tree.sync()
+
+        # Render's free tier is Web Service-only (Background Workers have no free
+        # instance type), so we run a throwaway HTTP endpoint just to satisfy Render's
+        # port-binding requirement. An external uptime pinger hitting this URL is what
+        # actually keeps the free instance from sleeping after 15 minutes idle.
+        app = web.Application()
+        app.router.add_get("/", health)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        port = int(os.environ.get("PORT", "8080"))
+        await web.TCPSite(runner, "0.0.0.0", port).start()
+        log.info(f"health check endpoint listening on :{port}")
 
 
 client = MyClient()

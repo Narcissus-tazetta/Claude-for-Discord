@@ -72,23 +72,27 @@
 
 まずここを試してください。
 
-## Phase 4: Render にデプロイ（10分）
+## Phase 4: Render にデプロイ（15分）
 
-- [ ] **先にRenderの料金ページを確認する**
-  - Background Worker が無料枠対象か、実行時間の上限、カード登録の要否をチェック
-  - ⚠️ 「無料で常時稼働」は保証されていません。条件は変わります
+⚠️ **Background Worker には無料枠が存在しません**（最安 $7/月〜）。無料で常時稼働させるため、**Web Service** + 外部pingサービスの組み合わせで構成します。`bot.py` には既にヘルスチェック用のHTTPサーバーが組み込み済みです。
+
 - [ ] [Render](https://render.com/) にGitHubアカウントでサインイン
-- [ ] **New → Background Worker** を選択（⚠️ Web Service ではありません）
+- [ ] **New → Web Service** を選択（⚠️ Background Worker ではありません）
 - [ ] このリポジトリを接続
 - [ ] 設定
   - **Build Command**: `pip install -r requirements.txt`
   - **Start Command**: `python bot.py`
-- [ ] **Environment** タブで環境変数を登録
+  - **Instance Type**: Free
+- [ ] **Environment** タブで環境変数を登録（`PORT` はRenderが自動設定するので不要）
   - `DISCORD_TOKEN`
   - `ANTHROPIC_API_KEY`
   - `ALLOWED_USER_IDS`
   - `CLAUDE_MODEL`（省略可）
+  - `CLAUDE_MAX_TOKENS`（省略可）
 - [ ] デプロイ実行 → ログでエラーが出ていないか確認
+- [ ] 割り当てられたURL（`https://xxxxx.onrender.com`）をブラウザで開き、`ok` と表示されるか確認
+- [ ] [UptimeRobot](https://uptimerobot.com/) 等に無料登録し、そのURLを5〜10分間隔でpingするモニターを追加
+  - ⚠️ これをやらないと15分後にスリープしてBotが応答しなくなります
 - [ ] Discordから実際に叩いて動くか確認
 - [ ] ローカルで起動しっぱなしのプロセスを停止する
   - ⚠️ 同じBotトークンで2つのプロセスを同時に動かすと競合します
@@ -113,4 +117,5 @@
 | 「権限がありません」と出る | `ALLOWED_USER_IDS` に自分のIDが正しく入っているか。カンマ区切りの書式、余計な引用符に注意 |
 | 起動直後に落ちる | 環境変数の設定漏れ。`ALLOWED_USER_IDS` が空だと意図的にエラーで止まります |
 | 「エラーが発生しました」と出る | 詳細はコンソール／Renderのログに出力されます。APIクレジット残高切れもよくある原因です |
-| Renderで動かない | Web Service ではなく **Background Worker** で作成しているか確認 |
+| Renderで動かない | **Background Worker** ではなく Web Service で作成しているか確認（無料枠はWeb Serviceのみ） |
+| デプロイ直後は動くが、しばらくすると反応しなくなる | UptimeRobot等のping設定漏れ・停止を疑う。無料Web Serviceは外部アクセスが15分ないとスリープします |

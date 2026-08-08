@@ -90,22 +90,26 @@ python bot.py
 
 `ALLOWED_USER_IDS` が空の場合、Botは起動時にエラーで停止します（許可リストなしで誤って公開状態になるのを防ぐためです）。
 
-### 3. Render にデプロイする（常時稼働）
+### 3. Render にデプロイする（無料枠 + 外部pingで常時稼働）
 
-このBotはWebサーバーではなく常駐プロセスなので、**Background Worker** として動かします。
+**Renderの無料枠は Web Service のみが対象です。Background Worker / Private Service に無料インスタンスは存在しません**（最安でも $7/月）。そのためこのBotは **Web Service** として動かし、Discord Gateway接続とは別に、Render向けの簡易ヘルスチェック用HTTPサーバー（`bot.py` 内、`aiohttp` で実装済み）を同居させています。
+
+ただし無料のWeb Serviceは**外部からのHTTPアクセスが15分間ないとスリープします**。スリープするとDiscord Gatewayとの接続も切れてBotが応答しなくなるため、外部の無料監視サービス（[UptimeRobot](https://uptimerobot.com/) や [cron-job.org](https://cron-job.org/) など）で5〜10分おきにpingし続ける必要があります。
 
 1. リポジトリをGitHubにプッシュします（`.env` は `.gitignore` 済みなので含まれません）。
-2. [Render](https://render.com/) にサインインし、**New → Background Worker** を選択してこのリポジトリを接続します。
+2. [Render](https://render.com/) にサインインし、**New → Web Service** を選択してこのリポジトリを接続します。
 3. 設定値:
    - **Build Command**: `pip install -r requirements.txt`
    - **Start Command**: `python bot.py`
-4. **Environment** タブで、`.env` と同じ環境変数（`DISCORD_TOKEN` / `ANTHROPIC_API_KEY` / `ALLOWED_USER_IDS` / 必要なら `CLAUDE_MODEL`）を登録します。
-5. デプロイを実行します。
+   - **Instance Type**: Free
+4. **Environment** タブで、`.env` と同じ環境変数（`DISCORD_TOKEN` / `ANTHROPIC_API_KEY` / `ALLOWED_USER_IDS` / 必要なら `CLAUDE_MODEL` / `CLAUDE_MAX_TOKENS`）を登録します。`PORT` はRenderが自動的に設定するので指定不要です。
+5. デプロイを実行し、割り当てられたURL（`https://xxxxx.onrender.com` の形式）を控えます。
+6. UptimeRobot などに無料アカウントを作成し、そのURLを5〜10分間隔でpingするモニターを設定します（HTTP(S)モニター、対象パスは `/` でOK）。
 
-> **料金プランについて**
-> Background Worker が無料枠で使えるか、また無料枠の条件（実行時間の上限、スリープの有無、クレジットカード登録の要否など）は変更されることがあります。**デプロイ前に必ずRenderの最新の料金ページを確認してください。** 常時稼働を無保証で前提にすると、Botが停止していることに気づけない可能性があります。
+> **この構成の限界について**
+> pingの間隔とRenderがスリープに入るタイミングの兼ね合いで、ごく短時間Botが落ちる瞬間が発生する可能性があります。完全な無停止を求める場合は、Oracle Cloud の Always Free枠のような「本当に常時稼働するVM」を使う方が確実です。まずはこの構成で様子を見て、不安定さが気になるようならそちらへの移行を検討してください。
 >
-> Renderにこだわらない場合、Railway、Fly.io、あるいは自宅の常時起動マシンやRaspberry Piでも同様に動作します。
+> Renderにこだわらない場合、Railway、Fly.io、あるいは自宅の常時起動マシンやRaspberry Piでも同様に動作します（自宅マシンの場合はヘルスチェックサーバーもUptimeRobotも不要です）。
 
 ### 4. 費用の上限を設定する（推奨）
 
