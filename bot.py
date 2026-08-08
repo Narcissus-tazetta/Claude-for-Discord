@@ -36,8 +36,13 @@ MODELS_WITHOUT_THINKING_SUPPORT = {"claude-haiku-4-5"}
 MODELS_WITHOUT_CODE_EXECUTION = {"claude-haiku-4-5"}
 WEB_FETCH_TOOL_MODERN = "web_fetch_20260318"
 WEB_FETCH_TOOL_BASIC = "web_fetch_20250910"
+WEB_SEARCH_TOOL_MODERN = "web_search_20260318"
+WEB_SEARCH_TOOL_BASIC = "web_search_20250305"
 WEB_FETCH_MAX_USES = 3
 WEB_FETCH_MAX_CONTENT_TOKENS = 30_000
+WEB_SEARCH_MAX_USES = 3
+# A single search can surface a dozen results; listing them all buries the answer.
+MAX_SOURCES_SHOWN = 5
 # Server tools can end a turn with stop_reason "pause_turn"; resend to let them finish.
 SERVER_TOOL_MAX_ROUNDS = 4
 
@@ -67,7 +72,13 @@ user_model_prefs: dict[int, dict] = {}  # user_id -> {"model": str, "thinking": 
 def get_model_prefs(user_id: int) -> dict:
     return user_model_prefs.setdefault(
         user_id,
-        {"model": CLAUDE_MODEL, "thinking": True, "effort": "high", "web_fetch": True},
+        {
+            "model": CLAUDE_MODEL,
+            "thinking": True,
+            "effort": "high",
+            "web_fetch": True,
+            "web_search": True,
+        },
     )
 
 
@@ -201,20 +212,29 @@ def build_request_kwargs(user_id: int) -> dict:
     model = prefs["model"]
     kwargs = {"model": model, "max_tokens": CLAUDE_MAX_TOKENS}
 
-    if prefs["web_fetch"]:
-        tool_type = (
-            WEB_FETCH_TOOL_BASIC
-            if model in MODELS_WITHOUT_CODE_EXECUTION
-            else WEB_FETCH_TOOL_MODERN
-        )
-        kwargs["tools"] = [
+    # The dynamic-filtering tool versions run on the code execution sandbox, so models
+    # without it need the older variants (see MODELS_WITHOUT_CODE_EXECUTION).
+    basic_only = model in MODELS_WITHOUT_CODE_EXECUTION
+    tools = []
+    if prefs["web_search"]:
+        tools.append(
             {
-                "type": tool_type,
+                "type": WEB_SEARCH_TOOL_BASIC if basic_only else WEB_SEARCH_TOOL_MODERN,
+                "name": "web_search",
+                "max_uses": WEB_SEARCH_MAX_USES,
+            }
+        )
+    if prefs["web_fetch"]:
+        tools.append(
+            {
+                "type": WEB_FETCH_TOOL_BASIC if basic_only else WEB_FETCH_TOOL_MODERN,
                 "name": "web_fetch",
                 "max_uses": WEB_FETCH_MAX_USES,
                 "max_content_tokens": WEB_FETCH_MAX_CONTENT_TOKENS,
             }
-        ]
+        )
+    if tools:
+        kwargs["tools"] = tools
 
     if model in MODELS_WITHOUT_THINKING_SUPPORT:
         return kwargs
@@ -234,19 +254,31 @@ def build_request_kwargs(user_id: int) -> dict:
 
 
 def summarize_fetches(content) -> tuple[list[str], list[str]]:
-    """Pull the URLs web_fetch retrieved, and any fetch failures, out of a response."""
-    fetched, failures = [], []
+    """Pull the URLs the server tools used, plus any failures, out of a response.
+
+    A successful web_search result is a *list* of results while an error is a single
+    object, so the two tools need slightly different unwrapping.
+    """
+    used, failures = [], []
     for block in content:
-        if block.type != "web_fetch_tool_result":
-            continue
-        inner = block.content
-        if getattr(inner, "type", None) == "web_fetch_tool_result_error":
-            failures.append(getattr(inner, "error_code", "unknown"))
-        else:
-            url = getattr(inner, "url", None)
-            if url and url not in fetched:
-                fetched.append(url)
-    return fetched, failures
+        if block.type == "web_fetch_tool_result":
+            inner = block.content
+            if getattr(inner, "type", None) == "web_fetch_tool_result_error":
+                failures.append(getattr(inner, "error_code", "unknown"))
+            else:
+                url = getattr(inner, "url", None)
+                if url and url not in used:
+                    used.append(url)
+        elif block.type == "web_search_tool_result":
+            inner = block.content
+            if isinstance(inner, list):
+                for result in inner:
+                    url = getattr(result, "url", None)
+                    if url and url not in used:
+                        used.append(url)
+            else:
+                failures.append(getattr(inner, "error_code", "unknown"))
+    return used, failures
 
 
 async def ask_claude(messages: list[dict], user_id: int) -> str:
@@ -274,7 +306,10 @@ async def ask_claude(messages: list[dict], user_id: int) -> str:
     text = "\n\n".join(texts) if texts else "(応答にテキストが含まれていませんでした)"
 
     if fetched:
-        text += "\n\n" + "\n".join(f"-# 取得元: <{u}>" for u in fetched)
+        shown = fetched[:MAX_SOURCES_SHOWN]
+        text += "\n\n" + "\n".join(f"-# 取得元: <{u}>" for u in shown)
+        if len(fetched) > len(shown):
+            text += f"\n-# ほか {len(fetched) - len(shown)} 件"
     if failures:
         text += f"\n\n*(⚠️ リンクの取得に失敗しました: {', '.join(sorted(set(failures)))})*"
     if response is not None and response.stop_reason == "max_tokens":
@@ -314,7 +349,8 @@ def settings_summary(user_id: int) -> str:
         f"・モデル: `{prefs['model']}`\n"
         f"・思考モード: `{thinking_str}`\n"
         f"・エフォート: `{effort_str}`\n"
-        f"・リンク読み込み: `{'ON' if prefs['web_fetch'] else 'OFF'}`"
+        f"・リンク読み込み: `{'ON' if prefs['web_fetch'] else 'OFF'}`\n"
+        f"・web検索: `{'ON' if prefs['web_search'] else 'OFF'}`"
     )
 
 
@@ -364,6 +400,12 @@ class SettingsView(discord.ui.View):
     async def toggle_web_fetch(self, interaction: discord.Interaction, button: discord.ui.Button):
         prefs = get_model_prefs(self.user_id)
         prefs["web_fetch"] = not prefs["web_fetch"]
+        await interaction.response.edit_message(content=settings_summary(self.user_id), view=self)
+
+    @discord.ui.button(label="web検索切替（ON/OFF）", style=discord.ButtonStyle.secondary, row=2)
+    async def toggle_web_search(self, interaction: discord.Interaction, button: discord.ui.Button):
+        prefs = get_model_prefs(self.user_id)
+        prefs["web_search"] = not prefs["web_search"]
         await interaction.response.edit_message(content=settings_summary(self.user_id), view=self)
 
     @discord.ui.button(label="回答の表示モード切替（自分のみ / 全員）", style=discord.ButtonStyle.primary, row=3)
