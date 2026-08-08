@@ -18,6 +18,7 @@ ALLOWED_USER_IDS = {
     if uid.strip()
 }
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
+CLAUDE_MAX_TOKENS = int(os.environ.get("CLAUDE_MAX_TOKENS", "4096"))
 HISTORY_DEPTH = 6
 DISCORD_CHUNK_LIMIT = 1900
 
@@ -93,13 +94,16 @@ async def build_history_from_message(channel, start_message: discord.Message, li
 async def ask_claude(messages: list[dict]) -> str:
     response = claude_client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=1500,
+        max_tokens=CLAUDE_MAX_TOKENS,
         messages=messages,
     )
     # content[0] isn't reliably the text block: extended-thinking models can prepend a
     # ThinkingBlock, which has no .text attribute.
     text_blocks = [block.text for block in response.content if block.type == "text"]
-    return "\n".join(text_blocks) if text_blocks else "(応答にテキストが含まれていませんでした)"
+    text = "\n".join(text_blocks) if text_blocks else "(応答にテキストが含まれていませんでした)"
+    if response.stop_reason == "max_tokens":
+        text += f"\n\n*(⚠️ 出力上限 {CLAUDE_MAX_TOKENS} トークンに達したため、ここで打ち切られています)*"
+    return text
 
 
 async def send_chunked(interaction: discord.Interaction, header: str, text: str, ephemeral: bool):
