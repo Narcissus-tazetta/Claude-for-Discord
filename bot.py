@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+import time
 import types
 from collections import OrderedDict
 import discord
@@ -605,4 +606,12 @@ async def regenerate_claude_answer(interaction: discord.Interaction, message: di
         await report_error(interaction, e, True)
 
 
-client.run(DISCORD_TOKEN)
+try:
+    client.run(DISCORD_TOKEN)
+except Exception:
+    # Login itself (before setup_hook even runs) can hit the same Cloudflare 1015 block
+    # on Render's shared IP. Sleeping before we let the process die gives the block a
+    # moment to clear instead of Render restarting us straight into the same wall.
+    log.exception("client.run() failed, sleeping before exit so Render's restart isn't instant")
+    time.sleep(30)
+    raise
