@@ -1,9 +1,10 @@
+import asyncio
 import base64
 import logging
 import os
-import time
 import types
 from collections import OrderedDict
+import aiohttp
 import discord
 from discord import app_commands
 from aiohttp import web
@@ -29,6 +30,10 @@ DISCORD_CHUNK_LIMIT = 1900
 # Regenerate cache: how many past answers we keep enough state on to redo. Bounded so a
 # long-running bot doesn't accumulate unbounded memory; oldest entries drop first.
 MAX_REGEN_RECORDS = 200
+# Backoff between Discord connection attempts. Capped so the bot still recovers on its own
+# within a few minutes once a Cloudflare block lifts.
+INITIAL_RETRY_DELAY = 30
+MAX_RETRY_DELAY = 600
 
 # Haiku 4.5 predates adaptive thinking / effort — sending either param to it returns a 400.
 # (Verified against the Models API: its `thinking.types.adaptive` and every `effort` level
@@ -119,10 +124,27 @@ async def health(request):
     return web.Response(text="ok")
 
 
+async def start_health_server():
+    # Render's free tier is Web Service-only (Background Workers have no free instance
+    # type), so we run a throwaway HTTP endpoint just to satisfy Render's port-binding
+    # requirement. An external uptime pinger hitting this URL is what actually keeps the
+    # free instance from sleeping after 15 minutes idle. This has to come up before the
+    # Discord login, not after: while login is being rate-limited, Render would otherwise
+    # see no open port and treat the deploy as failed.
+    app = web.Application()
+    app.router.add_get("/", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", "8080"))
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    log.info(f"health check endpoint listening on :{port}")
+
+
 class MyClient(discord.Client):
     def __init__(self):
         super().__init__(intents=discord.Intents.default())
         self.tree = app_commands.CommandTree(self)
+        self.connected_since_last_failure = False
 
     async def setup_hook(self):
         try:
@@ -134,17 +156,9 @@ class MyClient(discord.Client):
             # registered commands keep working even if this sync is skipped.
             log.warning("tree.sync() failed, continuing without re-syncing commands: %s", e)
 
-        # Render's free tier is Web Service-only (Background Workers have no free
-        # instance type), so we run a throwaway HTTP endpoint just to satisfy Render's
-        # port-binding requirement. An external uptime pinger hitting this URL is what
-        # actually keeps the free instance from sleeping after 15 minutes idle.
-        app = web.Application()
-        app.router.add_get("/", health)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        port = int(os.environ.get("PORT", "8080"))
-        await web.TCPSite(runner, "0.0.0.0", port).start()
-        log.info(f"health check endpoint listening on :{port}")
+    async def on_ready(self):
+        self.connected_since_last_failure = True
+        log.info("connected as %s", self.user)
 
 
 client = MyClient()
@@ -606,12 +620,34 @@ async def regenerate_claude_answer(interaction: discord.Interaction, message: di
         await report_error(interaction, e, True)
 
 
-try:
-    client.run(DISCORD_TOKEN)
-except Exception:
-    # Login itself (before setup_hook even runs) can hit the same Cloudflare 1015 block
-    # on Render's shared IP. Sleeping before we let the process die gives the block a
-    # moment to clear instead of Render restarting us straight into the same wall.
-    log.exception("client.run() failed, sleeping before exit so Render's restart isn't instant")
-    time.sleep(30)
-    raise
+async def main():
+    await start_health_server()
+
+    # Retry in-process rather than letting the process die: Render restarts a crashed
+    # process immediately, which resets any backoff and walks straight back into the same
+    # Cloudflare 1015 block on its shared IP. Staying alive lets the delay actually grow.
+    delay = INITIAL_RETRY_DELAY
+    async with client:
+        while True:
+            try:
+                await client.start(DISCORD_TOKEN)
+                return
+            except discord.LoginFailure:
+                # A bad token will never succeed, so don't sit in the retry loop over it.
+                raise
+            except (discord.HTTPException, aiohttp.ClientError, OSError) as e:
+                # static_login() builds a fresh ClientSession on every call without closing
+                # the previous one, so a long retry loop would leak one session per attempt.
+                await client.http.close()
+                # A drop after a healthy session isn't evidence of an ongoing block, so
+                # don't make it inherit a backoff grown during an earlier outage.
+                if client.connected_since_last_failure:
+                    client.connected_since_last_failure = False
+                    delay = INITIAL_RETRY_DELAY
+                log.warning("connection attempt failed, retrying in %ss: %s", delay, e)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, MAX_RETRY_DELAY)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
