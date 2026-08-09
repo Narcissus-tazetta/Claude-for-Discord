@@ -647,8 +647,11 @@ def retry_after_seconds(e: BaseException) -> float | None:
         seconds = float(response.headers.get("Retry-After"))
     except (TypeError, ValueError):
         return None
-    # Ignore nonsense (negative, or longer than an hour) rather than stalling for it.
-    return seconds if 0 < seconds <= 3600 else None
+    # Cloudflare hands out multi-hour values for an IP-level 1015 block (observed: ~14h).
+    # Honour them: polling through a block that long only risks having Cloudflare extend it,
+    # and the bot is unreachable either way. Cap at a day so a bogus header can't park the
+    # bot indefinitely.
+    return seconds if 0 < seconds <= 86400 else None
 
 
 async def main():
