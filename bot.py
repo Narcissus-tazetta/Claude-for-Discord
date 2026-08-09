@@ -124,7 +124,14 @@ class MyClient(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        await self.tree.sync()
+        try:
+            await self.tree.sync()
+        except Exception as e:
+            # A Cloudflare rate-limit block on Render's shared IP (HTTP 1015) can make this
+            # call fail. Don't let that crash the whole process — Render would just restart
+            # it and retry the same sync immediately, compounding the rate limit. Previously
+            # registered commands keep working even if this sync is skipped.
+            log.warning("tree.sync() failed, continuing without re-syncing commands: %s", e)
 
         # Render's free tier is Web Service-only (Background Workers have no free
         # instance type), so we run a throwaway HTTP endpoint just to satisfy Render's
