@@ -620,6 +620,37 @@ async def regenerate_claude_answer(interaction: discord.Interaction, message: di
         await report_error(interaction, e, True)
 
 
+def describe_connection_failure(e: BaseException) -> str:
+    """Spell out enough of a failed login to tell a Cloudflare IP block apart from a plain
+    Discord error. A Cloudflare 1015 arrives as an HTTP 429 whose body is an HTML error page
+    and whose headers carry CF-RAY / Server: cloudflare — none of which survives str(e)."""
+    response = getattr(e, "response", None)
+    if response is None:
+        return f"{type(e).__name__}: {e}"
+    headers = response.headers
+    body = (getattr(e, "text", "") or "").replace("\n", " ")[:200]
+    return (
+        f"status={getattr(e, 'status', None)} url={response.url} "
+        f"server={headers.get('Server')} cf_ray={headers.get('CF-RAY')} "
+        f"cf_mitigated={headers.get('CF-Mitigated')} retry_after={headers.get('Retry-After')} "
+        f"body={body!r}"
+    )
+
+
+def retry_after_seconds(e: BaseException) -> float | None:
+    """Retry-After from the response, if the server sent a usable one. Only the delta-seconds
+    form is honoured; the HTTP-date form is rare here and not worth parsing."""
+    response = getattr(e, "response", None)
+    if response is None:
+        return None
+    try:
+        seconds = float(response.headers.get("Retry-After"))
+    except (TypeError, ValueError):
+        return None
+    # Ignore nonsense (negative, or longer than an hour) rather than stalling for it.
+    return seconds if 0 < seconds <= 3600 else None
+
+
 async def main():
     await start_health_server()
 
@@ -648,8 +679,15 @@ async def main():
                 if client.connected_since_last_failure:
                     client.connected_since_last_failure = False
                     delay = INITIAL_RETRY_DELAY
-                log.warning("connection attempt failed, retrying in %ss: %s", delay, e)
-                await asyncio.sleep(delay)
+                # A server-supplied Retry-After knows more than our blind backoff does, so
+                # wait at least that long — but never shorten our own delay to match it.
+                wait = max(delay, retry_after_seconds(e) or 0)
+                log.warning(
+                    "connection attempt failed, retrying in %ss: %s",
+                    wait,
+                    describe_connection_failure(e),
+                )
+                await asyncio.sleep(wait)
                 delay = min(delay * 2, MAX_RETRY_DELAY)
 
 
