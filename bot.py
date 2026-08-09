@@ -638,7 +638,11 @@ async def main():
             except (discord.HTTPException, aiohttp.ClientError, OSError) as e:
                 # static_login() builds a fresh ClientSession on every call without closing
                 # the previous one, so a long retry loop would leak one session per attempt.
+                # Closing it also disposes the TCPConnector the session owns — and
+                # static_login reuses that same connector unless it's MISSING — so clear it
+                # too, otherwise the next attempt dies with "Session is closed".
                 await client.http.close()
+                client.http.connector = discord.utils.MISSING
                 # A drop after a healthy session isn't evidence of an ongoing block, so
                 # don't make it inherit a backoff grown during an earlier outage.
                 if client.connected_since_last_failure:
