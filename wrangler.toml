@@ -1,0 +1,36 @@
+name = "claude-for-discord"
+main = "src/index.ts"
+# One day behind today deliberately: the workerd binary shipped with wrangler 4.120.0 tops
+# out at 2026-08-08, so a later date deploys fine but breaks `wrangler dev`.
+compatibility_date = "2026-08-08"
+
+# No kv_namespaces here, deliberately: Workers KV quotas are per *account*, and the
+# discord-youtube-websub-worker on this same account already burns half the daily limit.
+# All state lives in Durable Object SQLite storage, which is metered separately.
+
+[[durable_objects.bindings]]
+name = "JOB_DO"
+class_name = "JobDO"
+
+[[durable_objects.bindings]]
+name = "STATE_DO"
+class_name = "StateDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["JobDO", "StateDO"]
+
+[vars]
+DISCORD_APPLICATION_ID = "1535506748742312059"
+# Public half of Discord's signing keypair — safe to commit, it only verifies signatures.
+DISCORD_PUBLIC_KEY = "f4321d8e9323e29c0a94732503120d0e6b23800f832534ba4873acff9cd198bd"
+CLAUDE_MODEL = "claude-sonnet-5"
+CLAUDE_MAX_TOKENS = "4096"
+
+# Set with `wrangler secret put` — never in this file:
+#   DISCORD_BOT_TOKEN   (reading messages when walking a reply chain)
+#   ANTHROPIC_API_KEY
+#   ALLOWED_USER_IDS    (comma-separated; a secret only so personal Discord ids stay out of git)
+
+[observability.logs]
+enabled = true

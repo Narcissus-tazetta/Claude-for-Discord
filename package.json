@@ -1,0 +1,24 @@
+{
+  "name": "claude-for-discord",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p scripts/tsconfig.json",
+    "lint": "biome check",
+    "lint:fix": "biome check --write",
+    "format": "biome format --write",
+    "verify": "bun run lint && bun run typecheck && bun test",
+    "register": "bun run scripts/register-commands.ts",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "@cloudflare/workers-types": "^4.20260101.0",
+    "@types/node": "^26.2.0",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.120.0"
+  }
+}

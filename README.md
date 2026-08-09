@@ -30,7 +30,7 @@ Discordの **User Install（ユーザーインストール）** に対応して�
 
 - Anthropicのサーバー側で取得が行われるため、Bot側にHTTP取得の実装はありません。**追加料金はかからず**、取得したページのトークン分だけが通常どおり課金されます。
 - **取得できるのは会話に既に登場しているURLだけです。** Claudeが自分でURLを組み立てて任意の場所へアクセスすることはできません（Anthropic側の仕様による制限）。
-- 1リクエストあたりの取得回数と取得量に上限を設けています（`bot.py` の `WEB_FETCH_MAX_USES` / `WEB_FETCH_MAX_CONTENT_TOKENS`）。
+- 1リクエストあたりの取得回数と取得量に上限を設けています（[src/constants.ts](src/constants.ts) の `WEB_FETCH_MAX_USES` / `WEB_FETCH_MAX_CONTENT_TOKENS`）。
 - JavaScriptで動的に描画されるページは取得できません。取得に失敗した場合は理由（`url_not_accessible` など）を回答の末尾に表示します。
 - 不要な場合は `/settings` の「リンク読み込み切替」でOFFにできます。
 
@@ -46,7 +46,7 @@ Discordの **User Install（ユーザーインストール）** に対応して�
 `/claude` の `attachment:` で直接添付するか、画像やPDFが添付されたメッセージを右クリックすると、その中身を読み取って回答します。
 
 - 対応形式: **JPEG / PNG / GIF / WebP / PDF**（GIFはアニメーションではなく1枚目のみ）
-- 1ファイルあたり **5MB** まで、1リクエストあたり **8ファイル・合計16MB** まで（`bot.py` の `MAX_ATTACHMENT_BYTES` などで変更可）
+- 1ファイルあたり **5MB** まで、1リクエストあたり **8ファイル・合計16MB** まで（[src/constants.ts](src/constants.ts) の `MAX_ATTACHMENT_BYTES` などで変更可）
 - 上限を超えたファイル・非対応形式のファイルは**エラーにならず静かにスキップ**され、残りだけが処理されます
 - 返信チェーンを遡って複数のメッセージに画像がある場合、上限に達するまで順に読み込みます
 
@@ -63,7 +63,7 @@ Discordの **User Install（ユーザーインストール）** に対応して�
 
 ## 必要なもの
 
-- Python 3.10 以降
+- [Bun](https://bun.sh/) と Cloudflare アカウント（無料枠で動作します）
 - Discord アプリケーション（Bot トークン）
 - Anthropic API キー（[Anthropic Console](https://console.anthropic.com/) で発行。**Claude Pro / Max のサブスクリプションとは別に、従量課金のAPIクレジットが必要です**）
 
@@ -88,20 +88,18 @@ Discordの **User Install（ユーザーインストール）** に対応して�
    - このURLを公開のチャンネルなどに貼る必要はありません（貼っても第三者は使えませんが、念のため自分だけで使ってください）。
 
 > **セキュリティ上の注意**
-> `Public Bot` の OFF は、あくまで「他人がこのアプリを自分のアカウントにインストールできるか」を制御するだけです。User Install されたコマンドは、同じサーバーやグループDMにいる別のユーザーからも見えてしまう場合があります。**実際にアクセスを遮断しているのは `bot.py` 内の許可リスト（`ALLOWED_USER_IDS`）です。** この判定を外すと、あなたのAPIキーが第三者に使われる状態になります。
+> `Public Bot` の OFF は、あくまで「他人がこのアプリを自分のアカウントにインストールできるか」を制御するだけです。User Install されたコマンドは、同じサーバーやグループDMにいる別のユーザーからも見えてしまう場合があります。**実際にアクセスを遮断しているのは Worker 側の許可リスト（`ALLOWED_USER_IDS` シークレット、[src/interactions.ts](src/interactions.ts) で参照）です。** この判定を外すと、あなたのAPIキーが第三者に使われる状態になります。
 >
 > 誰かに使わせたい場合、その人がアプリをインストールする必要はありません。`ALLOWED_USER_IDS` にそのユーザーIDを追加するだけで、あなたが導入済みのサーバー／グループDM上で使えるようになります。
 
 DiscordのユーザーIDは、Discordの設定で「開発者モード」を有効にしたうえで、ユーザーを右クリック →「ユーザーIDをコピー」で取得できます。
 
-### 2. ローカルで動かす
+### 2. ローカルにセットアップする
 
 ```bash
 git clone https://github.com/Narcissus-tazetta/Claude-for-Discord.git
 cd Claude-for-Discord
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+bun install
 cp .env.example .env
 ```
 
@@ -109,39 +107,37 @@ cp .env.example .env
 
 | 環境変数 | 必須 | 内容 |
 |---|---|---|
-| `DISCORD_TOKEN` | ✅ | Discord Developer Portal で取得したBotトークン |
+| `DISCORD_TOKEN` | ✅ | Discord Developer Portal で取得したBotトークン（コマンド登録スクリプトが使用） |
 | `ANTHROPIC_API_KEY` | ✅ | Anthropic API キー |
 | `ALLOWED_USER_IDS` | ✅ | 利用を許可するDiscordユーザーID。カンマ区切りで複数指定可 |
 | `CLAUDE_MODEL` | | 使用モデル。既定は `claude-sonnet-5` |
 
-起動します。
+スラッシュコマンドを登録します（初回のみ、以後はコマンド定義を変更したときだけ再実行）。
 
 ```bash
-python bot.py
+bun run register
 ```
 
-`ALLOWED_USER_IDS` が空の場合、Botは起動時にエラーで停止します（許可リストなしで誤って公開状態になるのを防ぐためです）。
+### 3. Cloudflare Workers にデプロイする
 
-### 3. Render にデプロイする（無料枠 + 外部pingで常時稼働）
+このBotは [Cloudflare Workers](https://workers.cloudflare.com/) 上で動く HTTP Interactions アプリです。ゲートウェイへの常時接続が不要なため、スリープや外部pingサービスの類は一切必要ありません。無料プランの範囲で動作します。
 
-**Renderの無料枠は Web Service のみが対象です。Background Worker / Private Service に無料インスタンスは存在しません**（最安でも $7/月）。そのためこのBotは **Web Service** として動かし、Discord Gateway接続とは別に、Render向けの簡易ヘルスチェック用HTTPサーバー（`bot.py` 内、`aiohttp` で実装済み）を同居させています。
+1. `wrangler.toml` の `DISCORD_APPLICATION_ID` / `DISCORD_PUBLIC_KEY`（Developer Portal の General Information タブに表示）を自分のアプリの値に書き換えます。
+2. まだなら `bunx wrangler login` でCloudflareアカウントにログインします。
+3. シークレットを登録します（これらは `wrangler.toml` ではなく Cloudflare 側に暗号化して保存されます）。
+   ```bash
+   bunx wrangler secret put DISCORD_BOT_TOKEN
+   bunx wrangler secret put ANTHROPIC_API_KEY
+   bunx wrangler secret put ALLOWED_USER_IDS
+   ```
+4. デプロイします。
+   ```bash
+   bun run deploy
+   ```
+   出力される `https://<name>.<subdomain>.workers.dev` のURLを控えます。
+5. Discord Developer Portal の **General Information** タブ → **Interactions Endpoint URL** に、そのURLを貼って保存します。保存が通れば署名検証まで含めて疎通しています。
 
-ただし無料のWeb Serviceは**外部からのHTTPアクセスが15分間ないとスリープします**。スリープするとDiscord Gatewayとの接続も切れてBotが応答しなくなるため、外部の無料監視サービス（[UptimeRobot](https://uptimerobot.com/) や [cron-job.org](https://cron-job.org/) など）で5〜10分おきにpingし続ける必要があります。
-
-1. リポジトリをGitHubにプッシュします（`.env` は `.gitignore` 済みなので含まれません）。
-2. [Render](https://render.com/) にサインインし、**New → Web Service** を選択してこのリポジトリを接続します。
-3. 設定値:
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `python bot.py`
-   - **Instance Type**: Free
-4. **Environment** タブで、`.env` と同じ環境変数（`DISCORD_TOKEN` / `ANTHROPIC_API_KEY` / `ALLOWED_USER_IDS` / 必要なら `CLAUDE_MODEL` / `CLAUDE_MAX_TOKENS`）を登録します。`PORT` はRenderが自動的に設定するので指定不要です。
-5. デプロイを実行し、割り当てられたURL（`https://xxxxx.onrender.com` の形式）を控えます。
-6. UptimeRobot などに無料アカウントを作成し、そのURLを5〜10分間隔でpingするモニターを設定します（HTTP(S)モニター、対象パスは `/` でOK）。
-
-> **この構成の限界について**
-> pingの間隔とRenderがスリープに入るタイミングの兼ね合いで、ごく短時間Botが落ちる瞬間が発生する可能性があります。完全な無停止を求める場合は、Oracle Cloud の Always Free枠のような「本当に常時稼働するVM」を使う方が確実です。まずはこの構成で様子を見て、不安定さが気になるようならそちらへの移行を検討してください。
->
-> Renderにこだわらない場合、Railway、Fly.io、あるいは自宅の常時起動マシンやRaspberry Piでも同様に動作します（自宅マシンの場合はヘルスチェックサーバーもUptimeRobotも不要です）。
+`bun run dev`（`wrangler dev`）でローカル実行もできますが、Discordの署名検証があるため、実際に動かして確認するには公開URLが必要です（`wrangler dev --remote` や一時的なトンネルを使う方法もあります）。
 
 ### 4. 費用の上限を設定する（推奨）
 
@@ -149,18 +145,16 @@ python bot.py
 
 ## 設定のカスタマイズ
 
-`bot.py` 冒頭の定数で調整できます。
+[src/constants.ts](src/constants.ts) の定数で調整できます。
 
 - `HISTORY_DEPTH` — 返信チェーンを遡る最大メッセージ数（既定 6）
 - `DISCORD_CHUNK_LIMIT` — 分割送信の1メッセージあたり文字数（既定 1900）
-- `CLAUDE_MAX_TOKENS`（環境変数） — 回答の最大トークン数（既定 4096）。長い回答がここに書いてある注記付きで途中で切れる場合は増やしてください。
+- `CLAUDE_MAX_TOKENS`（`wrangler.toml` の環境変数） — 回答の最大トークン数（既定 4096）。長い回答がここに書いてある注記付きで途中で切れる場合は増やしてください。
 
 ## 既知の制限
 
-- **設定は永続化されません。** `/settings` の内容（表示モード・モデル・思考モード・エフォート・リンク読み込み・web検索）はメモリ上にのみ保持されるため、再起動・再デプロイでデフォルトに戻ります。
 - **モデルによって使える機能が異なり、Botが自動で調整します。** Claude Haiku 4.5 は思考モードとエフォートに非対応（送るとAPIエラー）なので、選択時は内部的に送信を省略します。同じ理由で、web検索とリンク読み込みも Haiku 4.5 には旧世代のツール版（`web_search_20250305` / `web_fetch_20250910`）を、それ以外には最新版（`web_search_20260318` / `web_fetch_20260318`）を自動的に使い分けます。最新版は内部でコード実行を使うため、この切り替えを外すと Haiku 4.5 で400エラーになります。
 - **YouTubeの動画内容は読めません。** 詳細は「リンクの読み込み」の注記を参照してください。
-- **Ephemeralな回答に対して右クリックメニューが使えるかは未検証です。** 使えない場合、デフォルト設定のままでは「Claudeの回答を右クリックして続けて聞く」が成立しません。その場合は `/settings` で「全員に表示」に切り替えるか、`/claude` に `public:true` を付けて実行してください。
 - 添付ファイルは画像とPDFのみ対応です。動画・音声・テキストファイル・ZIPなどは読み取りません。
 - 回答内のリンクは「取得元」として一覧表示されますが、本文中の該当箇所に紐づく引用（Citations）は有効にしていません。
 - レート制限やリトライは実装していません。
