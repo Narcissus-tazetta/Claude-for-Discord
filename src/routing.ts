@@ -51,12 +51,15 @@ export interface TaskNeeds {
   inputTokens: number;
 }
 
-// Server-tool prices from the Gateway docs: Browserbase Search $7/1k; Fetch with markdown
-// extraction and no proxies $4/1k. The model may call an offered tool more than once.
-const SEARCH_USD = 0.007;
+// Server-tool prices from the Gateway docs: Perplexity Search $5/1k (Browserbase/Exa/Tako are
+// $7/1k); Fetch with markdown extraction and no proxies $4/1k. The model may call an offered
+// tool more than once.
+const SEARCH_USD = 0.005;
 const FETCH_USD = 0.004;
 const TOOL_CALL_ALLOWANCE = 2;
-const SEARCH_RESULT_TOKENS = 8192;
+// Results are re-billed as prompt tokens, so this cap also bounds the model-side cost of a search.
+const SEARCH_MAX_TOKENS = 3072;
+const SEARCH_RESULT_TOKENS = 4096;
 const FETCH_RESULT_TOKENS = 16_384;
 const URL_PATTERN = /https?:\/\/[^\s<>"）)\]]+/g;
 
@@ -98,7 +101,7 @@ export function analyzeTask(
   const simple =
     /^(こんにちは|ありがとう|hello|hi|おはよう)[！!。\s]*$/i.test(prompt) ||
     (prompt.length < 800 && /翻訳|訳して|要約|箇条書き|translate|summari[sz]e/i.test(prompt));
-  const search = prefs.web_search;
+  const search = prefs.web_search && !simple;
   // The whole history affects difficulty. A short follow-up can still be a hard task.
   const historyComplex =
     messages.length > 1 &&
@@ -134,6 +137,21 @@ export function promptTokens(model: ModelInfo, input: number, needs?: TaskNeeds)
     TOOL_CALL_ALLOWANCE *
       ((tools.search ? SEARCH_RESULT_TOKENS : 0) + tools.urls * FETCH_RESULT_TOKENS)
   );
+}
+
+/**
+ * Server-tool fees for one finished call. Without Gateway's per-tool counts, each offered
+ * tool is assumed to have run once, so an unreported search is never shown as free.
+ */
+export function toolCost(
+  model: ModelInfo,
+  needs: TaskNeeds | undefined,
+  calls: Record<string, number> | null,
+): number {
+  if (calls)
+    return (calls.perplexity_search ?? 0) * SEARCH_USD + (calls.browserbase_fetch ?? 0) * FETCH_USD;
+  const tools = toolsOffered(model, needs);
+  return (tools.search ? SEARCH_USD : 0) + tools.urls * FETCH_USD;
 }
 
 /** Expected-case cost used to compare models. */
@@ -369,8 +387,14 @@ export function serverTools(model: ModelInfo, needs: TaskNeeds): Record<string, 
   if (!model.tags.includes("tool-use")) return tools;
   if (needs.search)
     tools.push({
-      type: "vercel:browserbase_search",
-      config: { query: needs.prompt.slice(0, 200), num_results: 3 },
+      type: "vercel:perplexity_search",
+      // No `query`: a configured value overrides the model's, so every search would repeat
+      // the user's raw wording.
+      config: {
+        max_results: 3,
+        max_tokens: SEARCH_MAX_TOKENS,
+        max_tokens_per_page: 1024,
+      },
     });
   for (const url of needs.urls)
     tools.push({
@@ -391,7 +415,11 @@ export function classifierMessages(messages: ChatMessage[], needs: TaskNeeds): C
     {
       role: "user",
       content: JSON.stringify({
-        history: messages.map((m) => ({ role: m.role, text: textOf(m).slice(-3000) })).slice(-6),
+        // Earlier turns only hint at difficulty; the request itself gets the larger share.
+        history: messages.slice(-6).map((m, i, recent) => ({
+          role: m.role,
+          text: textOf(m).slice(i === recent.length - 1 ? -3000 : -1000),
+        })),
         attachments: { vision: needs.vision, pdf: needs.pdf },
       }),
     },

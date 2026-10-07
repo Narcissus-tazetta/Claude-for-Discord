@@ -17,6 +17,10 @@ export interface GatewayResult {
   reasoningTokens: number;
   finishReason: string;
   latencyMs: number;
+  /** Gateway's own total for this request, server tools included, when it reports one. */
+  cost: number | null;
+  /** Successful server-tool calls by tool name (e.g. `perplexity_search`), when reported. */
+  toolCalls: Record<string, number> | null;
 }
 
 export type GenerationCost = { found: false } | { found: true; cost: number | null };
@@ -265,6 +269,15 @@ export class GatewayClient {
               .map((b: any) => b.text)
               .join("")
           : "";
+    const meta = message.provider_metadata?.gateway;
+    const toolCalls =
+      meta?.gatewayToolCalls && typeof meta.gatewayToolCalls === "object"
+        ? Object.fromEntries(
+            Object.entries(meta.gatewayToolCalls as Record<string, unknown>).map(
+              ([name, count]) => [name, costNumber(count) ?? 0],
+            ),
+          )
+        : null;
     return {
       text,
       model: typeof data.model === "string" ? data.model : model.id,
@@ -274,6 +287,8 @@ export class GatewayClient {
       reasoningTokens: Number(data.usage?.completion_tokens_details?.reasoning_tokens) || 0,
       finishReason: data.choices[0].finish_reason ?? "unknown",
       latencyMs: Date.now() - started,
+      cost: costNumber(meta?.cost),
+      toolCalls,
     };
   }
 
