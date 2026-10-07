@@ -26,6 +26,7 @@ import {
   DISCOVERY_VERSION,
   evaluationCandidates,
   isApproved,
+  isFreeModel,
   type ModelInfo,
   mergeCatalog,
   parseCatalog,
@@ -905,6 +906,56 @@ describe("answer flow", () => {
       recordModelOutcome: async () => {},
     };
   }
+  test("free Auto retries only free models without paid classification or web tools", async () => {
+    const first = model({ id: "meta/free-test", input: 0, output: 0 });
+    const second = model({ id: "deepseek/free-test", input: 0, output: 0, released: 90 });
+    const store = state(approved([first, second, model()]));
+    const bodies: any[] = [];
+    spyOn(globalThis, "fetch").mockImplementation((async (_url: string, options?: RequestInit) => {
+      const body = JSON.parse(String(options?.body));
+      bodies.push(body);
+      if (bodies.length === 1) return json({}, 429);
+      return json({
+        id: "free-generation",
+        model: body.model,
+        choices: [{ message: { content: "無料の回答" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1000, completion_tokens: 500 },
+      });
+    }) as any);
+    const answer = await askAI(
+      [{ role: "user", content: [{ type: "text", text: "https://example.com を説明して" }] }],
+      { ...prefs, model: "auto-free" },
+      env,
+      store as any,
+    );
+    expect(bodies.map((body) => body.model)).toEqual([first.id, second.id]);
+    expect(bodies.every((body) => !body.tools)).toBe(true);
+    expect(answer).toContain("無料の回答");
+    expect(store.ledger.summary(Date.now()).total).toBe(0);
+  });
+  test("free Auto fails closed when prices increase, tiers cost money or candidates are untested", async () => {
+    const free = model({ id: "meta/free-test", input: 0, output: 0 });
+    const tiered = model({
+      input: 0,
+      output: 0,
+      tiers: [{ min: 10000, input: 1e-6, output: 1e-6 }],
+    });
+    expect(isFreeModel(tiered)).toBe(false);
+    expect(evaluationCandidates({ ...approved([free]), evaluations: {} })).toContainEqual(free);
+    const registry = approved([free, tiered, model()]);
+    registry.models[0] = { ...free, output: 1e-6 };
+    const fetcher = spyOn(globalThis, "fetch").mockImplementation((async () => {
+      throw new Error("must not call a paid model");
+    }) as any);
+    await expect(
+      askAI([], { ...prefs, model: "auto-free" }, env, state(registry) as any),
+    ).rejects.toThrow("無料モデルがまだありません");
+    expect(fetcher).not.toHaveBeenCalled();
+    const needs = analyzeTask([{ role: "user", content: "こんにちは" }], prefs);
+    expect(
+      rankModels({ ...approved([free]), evaluations: {} }, needs, 4096, 0.25, "auto-free"),
+    ).toHaveLength(0);
+  });
   test("classifier and answer share one ledger; billed totals replace reservations later", async () => {
     const registry = approved([model({ reasoning: [{ type: "toggle" }] })]);
     const store = state(registry);

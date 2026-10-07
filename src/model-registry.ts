@@ -63,7 +63,15 @@ export type Tier = "economy" | "balanced" | "strong";
 export const EMPTY_REGISTRY: Registry = { refreshedAt: 0, models: [], evaluations: {} };
 export const DAY_MS = 86_400_000;
 export const SUITE_VERSION = "1";
-export const DISCOVERY_VERSION = 3;
+export const DISCOVERY_VERSION = 4;
+/** A free base price alone is insufficient if long-context tiers become paid. */
+export function isFreeModel(model: ModelInfo): boolean {
+  return (
+    model.input === 0 &&
+    model.output === 0 &&
+    (model.tiers ?? []).every((tier) => tier.input === 0 && tier.output === 0)
+  );
+}
 export function autoFamily(id: string): boolean {
   return (
     /^(openai\/gpt-|anthropic\/claude-|google\/gemini-)/.test(id) &&
@@ -205,7 +213,8 @@ export function freshOutcome(registry: Registry, model: ModelInfo) {
  */
 function autoCandidate(model: ModelInfo): boolean {
   return (
-    autoFamily(model.id) &&
+    (autoFamily(model.id) || isFreeModel(model)) &&
+    !/(?:^|[-/])(safeguard|moderation)(?:[-/]|$)/i.test(model.id) &&
     !model.preview &&
     !/-fast$/.test(model.id) &&
     !model.tags.some((tag) => tag === "image-generation" || tag === "video-generation") &&
@@ -232,7 +241,7 @@ export function autoEvaluationPool(registry: Registry): ModelInfo[] {
     .filter((model) => {
       const tier = modelTier(model);
       if (!autoCandidate(model) || !tier) return false;
-      const key = `${model.id.split("/")[0]}:${tier}`;
+      const key = `${model.id.split("/")[0]}:${isFreeModel(model) ? "free" : tier}`;
       const count = bands.get(key) ?? 0;
       bands.set(key, count + 1);
       return count < 2;

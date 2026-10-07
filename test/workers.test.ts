@@ -134,6 +134,35 @@ const answers = [
 ];
 
 describe("StateDO", () => {
+  test("free Auto evaluates other creators with no paid evaluation budget and counts daily attempts", async () => {
+    const { state, ready, kv } = setup({ AI_EVALUATION_BUDGET_USD: "0" });
+    await ready();
+    const free = { ...model("meta/free-test"), input: 0, output: 0 };
+    const other = { ...free, id: "deepseek/free-test" };
+    kv.set("ai_registry", { ...registry(), models: [free, other, model()], evaluations: {} });
+    let calls = 0;
+    spyOn(globalThis, "fetch").mockImplementation((async (_url: string, options?: RequestInit) => {
+      const body = JSON.parse(String(options?.body));
+      expect([free.id, other.id]).toContain(body.model);
+      return json({
+        choices: [
+          { message: { content: answers[calls++ % answers.length] }, finish_reason: "stop" },
+        ],
+      });
+    }) as any);
+    const first = JSON.parse(await state.prepareRegistry(true, true));
+    expect(calls).toBe(6);
+    expect(first.progress.attemptsToday).toBe(1);
+    const adopted = first.models.find((m: ModelInfo) => isApproved(first, m));
+    expect(adopted).toBeDefined();
+    kv.get("ai_registry").evaluations = {};
+    const second = JSON.parse(await state.prepareRegistry(true, true));
+    expect(calls).toBe(12);
+    expect(second.progress.attemptsToday).toBe(2);
+    kv.get("ai_registry").evaluations = {};
+    await state.prepareRegistry(true, true);
+    expect(calls).toBe(12);
+  });
   test("defaults to Auto and retains existing user preferences", async () => {
     const { state, ready } = setup();
     await ready();
@@ -670,6 +699,10 @@ describe("Discord delivery and regeneration", () => {
     expect(state.getPrefs("123").model).toBe(model().id);
     await interact(`${CID_MODE}123`, ["auto"]);
     expect(state.getPrefs("123").model).toBe("auto");
+    const freeMode = await interact(`${CID_MODE}123`, ["auto-free"]);
+    expect(state.getPrefs("123").model).toBe("auto-free");
+    expect(freeMode.data.content).toContain("無料モデルのみ");
+    expect(freeMode.data.content).toContain("無料モードでは検索・リンク読み込みOFF");
   });
   test("quality and visibility save the intended state and reject forged settings", async () => {
     const { state, env, ready, kv } = setup();

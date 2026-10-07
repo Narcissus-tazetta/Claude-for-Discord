@@ -4,6 +4,7 @@ import {
   freshEvaluation,
   freshOutcome,
   isApproved,
+  isFreeModel,
   type ModelInfo,
   type Registry,
   ratesFor,
@@ -249,6 +250,11 @@ export function rankModels(
   priority: AnswerPriority = "medium",
   reasoningPrefs?: Pick<Prefs, "thinking" | "effort">,
 ): ModelInfo[] {
+  const freeOnly = manual === "auto-free";
+  if (freeOnly) {
+    manual = "auto";
+    needs = { ...needs, search: false, urls: [], fetchRequired: false };
+  }
   const prefsFor = answerReasoning(reasoningPrefs ?? { thinking: true, effort: priority }, needs);
   const plans = new Map<string, CallPlan | null>();
   const plan = (model: ModelInfo) => {
@@ -270,6 +276,7 @@ export function rankModels(
   const newest = Math.max(0, ...registry.models.filter((m) => !m.preview).map((m) => m.released));
   const ranked = registry.models
     .filter((model) => {
+      if (freeOnly && !isFreeModel(model)) return false;
       if (manual !== "auto" && model.id !== manual) return false;
       const evaluation = freshEvaluation(registry, model);
       const outcome = freshOutcome(registry, model);

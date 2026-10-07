@@ -127,15 +127,17 @@ export async function askAI(
     throw new ConfigurationError(
       "AI_GATEWAY_API_KEY が未設定です。管理者がAPIキーを設定してから利用してください。",
     );
+  const freeOnly = prefs.model === "auto-free";
+  const automatic = prefs.model === "auto" || freeOnly;
   const manual = normalizeModelPreference(prefs.model);
-  const registry = JSON.parse(await state.prepareRegistry(manual === "auto")) as Registry;
+  const registry = JSON.parse(await state.prepareRegistry(automatic, freeOnly)) as Registry;
   if (Date.now() - registry.refreshedAt > 2 * DAY_MS) {
     throw new ConfigurationError(
       "モデル料金を更新できていません。時間をおいて再試行してください。",
     );
   }
   const chat = toChatMessages(messages);
-  const needs = analyzeTask(chat, prefs);
+  const needs = analyzeTask(chat, freeOnly ? { web_fetch: false, web_search: false } : prefs);
   const limit = positiveSetting(env.AI_MAX_ANSWER_USD, 0.25);
   const calls = new PaidCalls(env, state, "answer", limit);
   const output = maxTokens(env);
@@ -145,7 +147,7 @@ export async function askAI(
   let classifiedTier: string | null = null;
   // Under "high" every tier gets the same score floor and score-first ordering, so the
   // classification could not change the pick.
-  if (manual === "auto" && needs.uncertain && priority !== "high") {
+  if (automatic && !freeOnly && needs.uncertain && priority !== "high") {
     const classifierNeeds: TaskNeeds = {
       ...needs,
       tier: "economy",
@@ -212,7 +214,8 @@ export async function askAI(
   console.log(
     JSON.stringify({
       event: "ai_route",
-      manual: manual !== "auto",
+      manual: !automatic,
+      freeOnly,
       priority,
       heuristicTier,
       uncertain: needs.uncertain,
@@ -222,9 +225,11 @@ export async function askAI(
   );
   if (!candidates.length)
     throw new ConfigurationError(
-      manual === "auto"
-        ? "この質問に対応する評価済みモデルがまだありません。/settings で手動選択するか、モデル評価の完了後に再試行してください。"
-        : "指定モデルが利用できないか、添付・文脈・費用の条件を満たしていません。/settings でAutoまたは別モデルを選んでください。",
+      freeOnly
+        ? "この質問に対応する評価済みの無料モデルがまだありません。モデル一覧を更新するか、評価完了後に再試行してください。有料モデルへの切り替えは行いません。"
+        : automatic
+          ? "この質問に対応する評価済みモデルがまだありません。/settings で手動選択するか、モデル評価の完了後に再試行してください。"
+          : "指定モデルが利用できないか、添付・文脈・費用の条件を満たしていません。/settings でAutoまたは別モデルを選んでください。",
     );
   const primary = candidates[0];
   const fallback =
@@ -265,7 +270,7 @@ export async function askAI(
     } catch (error) {
       if (error instanceof GatewayError && error.canFallback) {
         await state.recordModelOutcome(model.id, false);
-        if (manual === "auto" && model !== attempts.at(-1)) continue;
+        if (automatic && model !== attempts.at(-1)) continue;
       }
       throw error;
     }

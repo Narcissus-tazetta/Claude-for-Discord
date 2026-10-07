@@ -321,8 +321,8 @@ async function handleComponent(
         panel: "models",
         filter: "all",
       });
-    if (mode !== "auto") return message("無効なモデル選択です。");
-    prefs = await state.setPref(userId, "model", "auto");
+    if (mode !== "auto" && mode !== "auto-free") return message("無効なモデル選択です。");
+    prefs = await state.setPref(userId, "model", mode);
   } else if (customId.startsWith(CID_QUALITY)) {
     if (customId.slice(CID_QUALITY.length) !== userId) return message(MSG_NOT_OWNER);
     const quality = interaction.data?.values?.[0] ?? "";
