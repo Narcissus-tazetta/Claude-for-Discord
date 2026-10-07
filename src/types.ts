@@ -68,6 +68,7 @@ export const IT_MODAL_SUBMIT = 5;
 export const CB_PONG = 1;
 export const CB_CHANNEL_MESSAGE = 4;
 export const CB_DEFERRED_CHANNEL_MESSAGE = 5;
+export const CB_DEFERRED_UPDATE_MESSAGE = 6;
 export const CB_UPDATE_MESSAGE = 7;
 export const CB_MODAL = 9;
 

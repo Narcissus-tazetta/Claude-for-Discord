@@ -43,11 +43,15 @@ export class DiscordClient {
    *
    * No `flags` here: ephemerality was fixed at defer time and an edit cannot change it.
    */
-  patchOriginal(token: string, content: string): Promise<DiscordMessage> {
+  patchOriginal(token: string, content: string, components?: unknown[]): Promise<DiscordMessage> {
     return this.request(`${this.base}/webhooks/${this.appId}/${token}/messages/@original`, {
       method: "PATCH",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ content, allowed_mentions: NO_MENTIONS }),
+      body: JSON.stringify({
+        content,
+        ...(components ? { components } : {}),
+        allowed_mentions: NO_MENTIONS,
+      }),
     });
   }
 

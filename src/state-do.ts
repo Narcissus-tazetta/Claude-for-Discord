@@ -1,6 +1,28 @@
 import { DurableObject } from "cloudflare:workers";
-import { type Env, MAX_REGEN_RECORDS } from "./constants";
+import { PaidCalls } from "./ai";
+import { benchmarkReview } from "./benchmark-reviews";
+import { BudgetError, type BudgetKind, BudgetLedger, positiveSetting } from "./budget";
+import { EFFORT_LEVELS, type Env, MAX_REGEN_RECORDS } from "./constants";
+import { GatewayClient, GatewayError, reasoningOptions } from "./gateway";
+import { EVALUATION_MAX_OUTPUT, evaluateModel } from "./model-evaluation";
+import {
+  autoFamily,
+  DAY_MS,
+  DISCOVERY_VERSION,
+  EMPTY_REGISTRY,
+  evaluationCandidates,
+  freshEvaluation,
+  freshOutcome,
+  isApproved,
+  mergeCatalog,
+  parseCatalog,
+  type Registry,
+  revision,
+} from "./model-registry";
 import type { Prefs, RegenRecordWire } from "./types";
+
+// Gateway ingests usage asynchronously; a record still missing after this long never arrives.
+const PENDING_COST_GIVE_UP_MS = DAY_MS;
 
 // SQL row shapes. The index signature is what SqlStorage.exec<T>() asks for.
 interface PrefRow extends Record<string, SqlStorageValue> {
@@ -37,6 +59,372 @@ export type PrefKey = "ephemeral" | "model" | "thinking" | "effort" | "web_fetch
  * Worker, and Durable Object SQLite storage is metered separately.
  */
 export class StateDO extends DurableObject<Env> {
+  private refreshInFlight: Promise<void> | null = null;
+  private maintenanceInFlight: Promise<void> | null = null;
+  private ledger(): BudgetLedger {
+    return new BudgetLedger((query, ...params) =>
+      this.ctx.storage.sql.exec(query, ...params).toArray(),
+    );
+  }
+
+  reserveSpend(id: string, amount: number, kind: BudgetKind): void {
+    if (kind !== "answer" && kind !== "evaluation") throw new Error("invalid budget kind");
+    this.ctx.storage.transactionSync(() =>
+      this.ledger().reserve(
+        id,
+        amount,
+        kind,
+        positiveSetting(this.env.AI_MONTHLY_BUDGET_USD, 10),
+        positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5),
+        Date.now(),
+      ),
+    );
+  }
+
+  settleSpend(id: string, actual: number | null): void {
+    this.ctx.storage.transactionSync(() => this.ledger().settle(id, actual));
+  }
+
+  async deferSpend(id: string, generationId: string): Promise<void> {
+    this.ctx.storage.transactionSync(() => this.ledger().defer(id, generationId, Date.now()));
+    await this.scheduleNextAlarm();
+  }
+
+  /** Resolve deferred costs from Gateway's billing records. */
+  private async settlePending(): Promise<void> {
+    const gateway = new GatewayClient(this.env);
+    for (const row of this.ledger().pending(25)) {
+      const expired = Date.now() - row.createdAt > PENDING_COST_GIVE_UP_MS;
+      try {
+        const result = await gateway.generationCost(row.generationId);
+        if (result.found) {
+          this.ctx.storage.transactionSync(() => this.ledger().resolve(row.id, result.cost));
+          continue;
+        }
+      } catch (error) {
+        console.error(
+          "generation cost lookup failed",
+          error instanceof GatewayError ? error.status : "transport",
+        );
+      }
+      if (expired) {
+        // The reservation stays charged: an unknown cost must not free budget.
+        console.error("generation cost never appeared; keeping reservation", row.generationId);
+        this.ctx.storage.transactionSync(() => this.ledger().resolve(row.id, null));
+      }
+    }
+  }
+
+  /** `fromAlarm`: the alarm that just ran must be replaced, not merely moved earlier. */
+  private async scheduleNextAlarm(fromAlarm = false): Promise<void> {
+    if (!this.env.AI_GATEWAY_API_KEY) return;
+    const now = Date.now();
+    const due = (await this.ctx.storage.get<number>("ai_maintenance_due")) ?? now + 5 * 60 * 1000;
+    const oldest = this.ledger().oldestPending();
+    // Back off as a record stays missing: ingestion usually takes seconds, rarely longer.
+    const settleAt =
+      oldest === null
+        ? Number.POSITIVE_INFINITY
+        : now + (now - oldest < 60_000 ? 5_000 : now - oldest < 3_600_000 ? 60_000 : 600_000);
+    const next = Math.min(due, settleAt);
+    const current = await this.ctx.storage.getAlarm();
+    if (fromAlarm || current === null || current > next) await this.ctx.storage.setAlarm(next);
+  }
+
+  async getRegistryJson(): Promise<string> {
+    const registry = await this.registry();
+    if (registry.discoveryVersion !== DISCOVERY_VERSION && this.env.AI_GATEWAY_API_KEY) {
+      await this.scheduleMaintenance();
+    }
+    const day = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const daily = await this.ctx.storage.get<{ day: string; ids: string[] }>("ai_evaluation_day");
+    const lastFailure =
+      await this.ctx.storage.get<NonNullable<Registry["progress"]>["lastFailure"]>(
+        "ai_evaluation_error",
+      );
+    return JSON.stringify({
+      ...registry,
+      progress: {
+        attemptsToday: daily?.day === day ? daily.ids.filter(autoFamily).length : 0,
+        dailyLimit: 2,
+        budgetUsd: positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5),
+        nextRunAt: await this.ctx.storage.getAlarm(),
+        ...(lastFailure ? { lastFailure } : {}),
+      },
+    });
+  }
+
+  private async registry(): Promise<Registry> {
+    return (await this.ctx.storage.get<Registry>("ai_registry")) ?? structuredClone(EMPTY_REGISTRY);
+  }
+
+  async scheduleMaintenance(): Promise<void> {
+    if (!this.env.AI_GATEWAY_API_KEY) return;
+    await this.ctx.storage.put("ai_maintenance_due", Date.now());
+    await this.ctx.storage.setAlarm(Date.now());
+  }
+
+  async refreshCatalog(): Promise<void> {
+    await this.refreshRegistry(true);
+    await this.ensureAlarm();
+  }
+
+  private async refreshRegistry(force = false): Promise<void> {
+    if (this.refreshInFlight) return await this.refreshInFlight;
+    this.refreshInFlight = (async () => {
+      const old = await this.registry();
+      if (
+        !force &&
+        old.discoveryVersion === DISCOVERY_VERSION &&
+        Date.now() - old.refreshedAt < DAY_MS
+      )
+        return;
+      const catalog = await new GatewayClient(this.env).catalog();
+      const models = parseCatalog(catalog);
+      await this.ctx.blockConcurrencyWhile(async () => {
+        const current = await this.registry();
+        const updated = mergeCatalog(current, models);
+        if (current.refreshedAt) await this.ctx.storage.put("ai_registry_previous", current);
+        await this.ctx.storage.put("ai_registry", updated);
+      });
+    })();
+    try {
+      await this.refreshInFlight;
+    } finally {
+      this.refreshInFlight = null;
+    }
+  }
+
+  /** First Auto request bootstraps one model. Existing preferences are not overwritten. */
+  async prepareRegistry(auto = true): Promise<string> {
+    try {
+      await this.refreshRegistry();
+    } catch (error) {
+      console.error(
+        "catalog refresh failed",
+        error instanceof GatewayError ? error.status : "transport",
+      );
+    }
+    const registry = await this.registry();
+    if (
+      auto &&
+      !registry.models.some((model) => isApproved(registry, model)) &&
+      Date.now() - registry.refreshedAt < 2 * DAY_MS
+    )
+      await this.maintainModels();
+    await this.ensureAlarm();
+    return await this.getRegistryJson();
+  }
+
+  private async ensureAlarm(): Promise<void> {
+    if (this.env.AI_GATEWAY_API_KEY && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.put("ai_maintenance_due", Date.now() + 5 * 60 * 1000);
+      await this.ctx.storage.setAlarm(Date.now() + 5 * 60 * 1000);
+    }
+  }
+
+  private async maintainModels(): Promise<void> {
+    if (this.maintenanceInFlight) return await this.maintenanceInFlight;
+    this.maintenanceInFlight = this.evaluateNext();
+    try {
+      await this.maintenanceInFlight;
+    } finally {
+      this.maintenanceInFlight = null;
+    }
+  }
+
+  private async evaluateNext(): Promise<void> {
+    const day = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const daily = await this.ctx.storage.get<{ day: string; ids: string[] }>("ai_evaluation_day");
+    const ids = daily?.day === day ? daily.ids.filter(autoFamily) : [];
+    if (ids.length >= 2 || positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5) === 0) return;
+    const registry = await this.registry();
+    const candidates = evaluationCandidates(registry).filter((model) => !ids.includes(model.id));
+    // Bootstrap inexpensive models first and spread evaluation across all three creators.
+    candidates.sort((a, b) => {
+      const coverage = (id: string) =>
+        registry.models.filter(
+          (m) => m.id.split("/")[0] === id.split("/")[0] && isApproved(registry, m),
+        ).length;
+      return (
+        coverage(a.id) - coverage(b.id) ||
+        a.input + a.output - (b.input + b.output) ||
+        b.released - a.released
+      );
+    });
+    const model = candidates[0];
+    if (!model) return;
+    // Claim before any paid work so alarm retries/crashes cannot repeat the same suite today.
+    await this.ctx.storage.put("ai_evaluation_day", { day, ids: [...ids, model.id] });
+    const calls = new PaidCalls(this.env, this, "evaluation", 0.15);
+    try {
+      const evaluation = await evaluateModel(model, (candidate, messages) => {
+        const minimum =
+          candidate.reasoning.find((option) => option.type === "budget_tokens")?.min ?? 0;
+        const mandatoryBudget =
+          minimum > 0 &&
+          !candidate.reasoning.some(
+            (option) => option.type === "toggle" || option.type === "effort",
+          );
+        const cap = Math.min(
+          candidate.maxOutput,
+          mandatoryBudget ? Math.max(EVALUATION_MAX_OUTPUT, minimum + 256) : EVALUATION_MAX_OUTPUT,
+        );
+        return calls.complete(
+          candidate,
+          messages,
+          cap,
+          reasoningOptions(candidate, { thinking: true, effort: "low" }, cap),
+        );
+      });
+      await this.ctx.blockConcurrencyWhile(async () => {
+        const latest = await this.registry();
+        if (latest.models.some((m) => m.id === model.id && revision(m) === evaluation.revision)) {
+          latest.evaluations[model.id] = evaluation;
+          await this.ctx.storage.put("ai_registry", latest);
+        }
+      });
+      await this.ctx.storage.put("ai_evaluation_error", null);
+      console.log(
+        JSON.stringify({
+          event: "model_evaluated",
+          model: model.id,
+          basic: evaluation.basic,
+          balanced: evaluation.balanced,
+          complex: evaluation.complex,
+          vision: evaluation.vision,
+          pdf: evaluation.pdf,
+        }),
+      );
+    } catch (error) {
+      await this.ctx.storage.put("ai_evaluation_error", {
+        model: model.id,
+        at: Date.now(),
+        reason:
+          error instanceof GatewayError
+            ? error.status === 402
+              ? "Gateway残高不足"
+              : error.status === 401
+                ? "APIキーの認証エラー"
+                : `Gatewayエラー（${error.status}）`
+            : error instanceof BudgetError
+              ? "Botの評価／回答予算上限"
+              : "通信または処理エラー",
+      });
+      // Interrupted suites never qualify a model. Do not replace prior approvals on error.
+      console.error(
+        "model evaluation incomplete",
+        model.id,
+        error instanceof GatewayError
+          ? error.status
+          : error instanceof BudgetError
+            ? "budget"
+            : "transport",
+      );
+    }
+  }
+
+  /** Admin RPC through an account-owned binding. One small connection probe per reviewed model. */
+  async checkBenchmarkedConnections(): Promise<{ model: string; status: string }[]> {
+    const registry = await this.registry();
+    const results: { model: string; status: string }[] = [];
+    for (const model of registry.models.filter(
+      (m) => benchmarkReview(m) && isApproved(registry, m),
+    )) {
+      if (freshEvaluation(registry, model)?.basic || freshOutcome(registry, model)?.successes) {
+        results.push({ model: model.id, status: "already-confirmed" });
+        continue;
+      }
+      try {
+        const calls = new PaidCalls(this.env, this, "evaluation", 0.05);
+        const cap = Math.min(1024, model.maxOutput);
+        const result = await calls.complete(
+          model,
+          [{ role: "user", content: "Reply with only CONNECTION_OK." }],
+          cap,
+          reasoningOptions(model, { thinking: true, effort: "low" }, cap),
+        );
+        const success = result.finishReason === "stop" && result.text.trim() === "CONNECTION_OK";
+        await this.recordModelOutcome(model.id, success);
+        results.push({ model: model.id, status: success ? "confirmed" : "unexpected-response" });
+      } catch (error) {
+        results.push({
+          model: model.id,
+          status:
+            error instanceof BudgetError
+              ? "budget-limit"
+              : error instanceof GatewayError
+                ? `gateway-${error.status}`
+                : "transport-error",
+        });
+        // Never retry ambiguous paid failures or bypass the shared evaluation budget.
+        if (!(error instanceof GatewayError) || !error.canFallback) break;
+      }
+    }
+    return results;
+  }
+
+  async recordModelOutcome(id: string, success: boolean): Promise<void> {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const registry = await this.registry();
+      const model = registry.models.find((m) => m.id === id);
+      if (!model) return;
+      const previous = freshOutcome(registry, model);
+      const failures = success ? 0 : (previous?.failures ?? 0) + 1;
+      registry.outcomes ??= {};
+      registry.outcomes[id] = {
+        revision: revision(model),
+        testedAt: Date.now(),
+        successes: (previous?.successes ?? 0) + Number(success),
+        failures,
+        disabledUntil: failures >= 3 ? Date.now() + DAY_MS : (previous?.disabledUntil ?? 0),
+      };
+      const evaluation = registry.evaluations[id];
+      if (evaluation) {
+        evaluation.failures = success ? 0 : evaluation.failures + 1;
+        if (evaluation.failures >= 3) evaluation.disabledUntil = Date.now() + DAY_MS;
+      }
+      await this.ctx.storage.put("ai_registry", registry);
+    });
+  }
+
+  /** One alarm serves two schedules: cost settlement (seconds) and model maintenance (daily). */
+  async alarm(): Promise<void> {
+    if (!this.env.AI_GATEWAY_API_KEY) return;
+    try {
+      await this.settlePending();
+      const due = (await this.ctx.storage.get<number>("ai_maintenance_due")) ?? 0;
+      if (Date.now() >= due) await this.runMaintenance();
+    } finally {
+      await this.scheduleNextAlarm(true);
+    }
+  }
+
+  private async runMaintenance(): Promise<void> {
+    try {
+      await this.refreshRegistry();
+      await this.maintainModels();
+    } catch (error) {
+      console.error(
+        "AI maintenance failed",
+        error instanceof GatewayError ? error.status : "configuration/transport",
+        error instanceof Error ? error.name : "unknown",
+      );
+    } finally {
+      const daily = await this.ctx.storage.get<{ day: string; ids: string[] }>("ai_evaluation_day");
+      const day = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const registry = await this.registry();
+      const more =
+        positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5) > 0 &&
+        daily?.day === day &&
+        daily.ids.filter(autoFamily).length < 2 &&
+        evaluationCandidates(registry).some((model) => !daily.ids.includes(model.id));
+      await this.ctx.storage.put(
+        "ai_maintenance_due",
+        Date.now() + (more ? 5 * 60 * 1000 : DAY_MS),
+      );
+    }
+  }
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -79,9 +467,9 @@ export class StateDO extends DurableObject<Env> {
     // Mirrors get_model_prefs() plus the separate display-mode default (ephemeral = true).
     return {
       ephemeral: true,
-      model: this.env.CLAUDE_MODEL || "claude-sonnet-5",
+      model: this.env.AI_DEFAULT_MODEL || "auto",
       thinking: true,
-      effort: "high",
+      effort: "medium",
       web_fetch: true,
       web_search: true,
     };
@@ -118,6 +506,19 @@ export class StateDO extends DurableObject<Env> {
   togglePref(userId: string, key: "ephemeral" | "thinking" | "web_fetch" | "web_search"): Prefs {
     const current = this.getPrefs(userId);
     const next: Prefs = { ...current, [key]: !current[key] };
+    this.write(userId, next);
+    return next;
+  }
+
+  /** Save both fields together so a quality selection cannot leave a half-updated preference. */
+  setAnswerQuality(userId: string, quality: string): Prefs {
+    if (quality !== "off" && !EFFORT_LEVELS.includes(quality)) throw new Error("invalid quality");
+    const current = this.getPrefs(userId);
+    const next = {
+      ...current,
+      thinking: quality !== "off",
+      effort: quality === "off" ? current.effort : quality,
+    };
     this.write(userId, next);
     return next;
   }

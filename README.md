@@ -1,164 +1,156 @@
-# Claude for Discord
+# AI for Discord
 
-Discordから[Claude](https://www.anthropic.com/claude)を呼び出す、個人利用向けのBotです。
+GPT・Claude・Geminiを[Vercel AI Gateway](https://vercel.com/ai-gateway)経由で使う、個人利用向けDiscord Botです。既定の **Auto** は質問の難しさ、会話履歴、画像/PDF、検索の必要性と費用を見て、公開ベンチマークを確認したモデル、または基本動作テストを通ったモデルから選びます。
 
-Discordの **User Install（ユーザーインストール）** に対応しているため、Botをサーバーに招待しなくても、自分が参加しているサーバー・DM・グループDMのどこからでも呼び出せます。アクセスは許可リスト（ユーザーIDの明示指定）で制御され、リストにないユーザーからのリクエストは一切APIに到達しません。
+Cloudflare Workers + Durable Objects SQLite上で動作します。DiscordのUser Installに対応し、許可したユーザーだけが利用できます。時間のかかるAPI呼び出しはalarmで実行し、Discordには先に受付応答を返します。
 
-> **想定用途について**
-> このBotは「自分と、自分が明示的に許可した数人」が使うことを前提に設計されています。不特定多数が参加する大規模サーバーへの導入や、一般公開Botとしての運用は想定していません（会話設定がメモリ上のみで永続化されない、レート制限を実装していない等のため）。
-
-## 機能
+## 使い方
 
 | 操作 | 内容 |
 |---|---|
-| `/claude prompt:...` | 新規会話としてClaudeに質問します。`attachment:` で画像やPDFを添付でき、`public:true` を付けるとその回答だけ全員に見える形で出力します。 |
-| メッセージを右クリック → アプリ → **「Claudeに続けて聞く」** | そのメッセージを文脈に含めた状態で追加の質問ができます。質問文はモーダルで入力します。文中のリンクや添付された画像・PDFもそのまま読み取ります。 |
-| `/settings` | 回答のデフォルト表示（自分だけに表示 / 全員に表示）、使用モデル、思考モード（ON/OFF）、エフォート（`low`〜`max`）、リンク読み込み（ON/OFF）を切り替えます。 |
+| `/ai prompt:...` | 新しい会話で質問。`attachment:` は画像/PDF、`public:true` はその回答だけ公開 |
+| `/claude prompt:...` | 既存コマンドとの互換用。`/ai`と同じ動作 |
+| 右クリック → アプリ →「AIに続けて聞く」 | 選択したメッセージと取得できる返信履歴を使って質問 |
+| 右クリック → アプリ →「AIの回答を再生成」 | 現在のモデル設定で再生成。長い回答のどの部分からでも実行可 |
+| `/settings` | Auto/手動モデル、回答の質 / コスト、検索、リンク読み込み、非公開/公開を設定 |
 
-- 回答が長い場合はDiscordの文字数上限に合わせて自動分割して送信します（表示設定は分割後の全メッセージに引き継がれます）。
-- 応答が「自分だけに表示（Ephemeral）」の場合、その内容は同じチャンネルの他の参加者には見えません。
+既存の「Claudeに続けて聞く」「Claudeの回答を再生成」も動作します。新コマンドを登録するまでは現在のDiscord上のコマンドを使用できます。
 
-### web検索（Web search）
+- 基本設定ではAuto/手動、回答の質 / コスト、検索・リンク、公開範囲を選べます。現在の選択を表示し、変更は即保存・次の質問から反映されます。
+- 手動モデルは別画面でGPT・Claude・Gemini・その他のAIに絞り込み、ページを切り替えて選べます。Gatewayで利用できる料金・文脈上限の明確な言語モデルが対象です。新モデルやPreviewも手動で試せます。
+- クレジット購入後や新モデル追加時は「モデル一覧を更新」で利用可能なモデルをすぐに取り直せます。この操作はモデル情報だけを取得し、有料の品質評価や回答APIは呼びません。
+- モデルごとに入力1,000＋出力500トークンの場合の参考費用（USDと円）を表示します。円換算は固定の参考レートを明記し、`AI_USD_JPY_RATE`で変更できます。初期値158.10は[日銀の2026-10-07 17:00公表値](https://www.boj.or.jp/en/statistics/market/forex/fxdaily/fxlist/fx261007.pdf)を丸めた参考値です。実際の請求はUSDです。手動選択後は100回分と100万トークン単価も確認できます。思考・添付・検索・長い履歴の費用はこの概算から増減します。
+- 個人設定は永続化されます。既存ユーザーの選択は維持し、新規ユーザーはAutoになります。以前のClaudeモデルIDはGateway形式へ変換します。
+- 回答の末尾に使用モデルと費用の概算（実際のトークン数×単価）を表示します。質問分類・フォールバックの呼び出しも含みます。予算台帳は後からGatewayの確定料金に置き換わります。
+- 公開ベンチマークで確認した5モデルは、基本テストの待ち時間なしでAuto候補にします。公開指標の採用と実接続・動作テストの確認は分けて表示します。確認日・思考量別スコア・出典・採用判断は [モデル評価資料](docs/model-review-2026-10-07.md) にまとめています。
+- 「未評価」はBot独自の基本テストが未完了という意味です。全一覧を評価せず、各社・価格帯の新しい安定版を最大2個ずつ候補にします。画面では評価待ちと手動用（Auto評価対象外）を分け、採用数・評価完了数・今日の試行数・今後発生した直近の失敗理由を表示します。失敗した試行も1日の枠に数え、購入後も自動で枠をリセットしません。
+- 初回はモデル一覧と評価の準備に時間がかかります。Autoの候補がまだない場合は手動モデルを選択できます。
+- 既定は自分だけに表示。長い回答は分割し、追加メッセージにも非公開設定を付けます。
 
-学習データにない最新の情報や、URLが手元にない話題については、Claudeが必要と判断すればweb検索を行って回答します。参照したURLは回答末尾に「取得元」として表示されます（多い場合は上位5件＋件数）。
+## Autoと最新モデルの更新
 
-リンク読み込みと併用すると、**「URLは分からないがページ名は分かる」ケースにも対応できます** — 検索でページを見つけ、そのURLを読み込んで回答する、という流れが自動的に行われます。不要な場合は `/settings` の「web検索切替」でOFFにできます。
+1. 初回の質問または `/settings` でStateDOのalarmを開始し、Gatewayのモデル・料金一覧を毎日更新します。初回の質問でも取得します。CloudflareのCron枠は使用しません。
+2. 手動一覧はGatewayの言語モデルを対象とし、料金・文脈上限が不明なモデルと利用不可のモデルを除外します。Autoの評価対象は `openai/gpt-*`、`anthropic/claude-*`、`google/gemini-*` に限定します。Safeguardなど安全性分類専用モデルはAutoとその評価枠から除外し、既存の一般モデル試行・支出台帳は維持します。
+3. 安定版の新しいモデルを、各社・価格帯ごとに最大2個まで評価候補にします。同じモデルの割高な `-fast` 版と画像/動画生成モデルは対象外です。1回のalarmで1モデル、JSTの1日で最大2モデルを評価します。
+4. 公開ベンチマークの確認モデルは別の採用表で管理します。未知モデルの小規模テストでは、日本語JSON、計算、要約、条件整理、Unicodeコード、依存タスクの計算を確認します。画像/PDF対応モデルには埋め込んだテスト画像・PDFも送ります。公開指標の確認も動作テスト合格もないモデルはAutoに採用しません。
+5. 合格モデルを用途別の候補へ追加します。Previewは手動利用のみ。料金・対応機能が変わると再評価が必要になります。
 
-### リンクの読み込み（Web fetch）
+質問は `economy` / `balanced` / `strong` に分類します。明確なケースはルールで判定し、曖昧なときだけ思考を切れる安いモデルへ分類を依頼します。品質優先では分類結果で選ぶモデルが変わらないため、分類を省きます。短い追加質問も履歴の難しさを考慮します。振り分け結果はログ（`ai_route`）に残ります。
 
-メッセージにURLが含まれている場合、Claudeが必要と判断すればそのページを取得して内容を踏まえた回答をします。取得したURLは回答の末尾に「取得元」として表示されます。
+「回答の質 / コスト」は3段階です。公開スコアは実際にGatewayへ送る思考量に合わせます。
 
-- Anthropicのサーバー側で取得が行われるため、Bot側にHTTP取得の実装はありません。**追加料金はかからず**、取得したページのトークン分だけが通常どおり課金されます。
-- **取得できるのは会話に既に登場しているURLだけです。** Claudeが自分でURLを組み立てて任意の場所へアクセスすることはできません（Anthropic側の仕様による制限）。
-- 1リクエストあたりの取得回数と取得量に上限を設けています（[src/constants.ts](src/constants.ts) の `WEB_FETCH_MAX_USES` / `WEB_FETCH_MAX_CONTENT_TOKENS`）。
-- JavaScriptで動的に描画されるページは取得できません。取得に失敗した場合は理由（`url_not_accessible` など）を回答の末尾に表示します。
-- 不要な場合は `/settings` の「リンク読み込み切替」でOFFにできます。
+- **コスト優先**: 難易度に応じた最低公開指標を満たす安い候補＋low。
+- **バランス（既定）**: 短い会話はlow、通常はmedium、難問はhigh。通常/難問では一定の公開指標を満たす候補を優先し、その中で費用を比較します。
+- **品質優先**: その思考量の公開指標が高い候補を優先。予算が足りなければ次の候補へ戻ります。
 
-> **YouTubeなど一部のサイトは取得できません**
-> YouTubeは動的描画かつ自動取得をブロックしているため、動画URLを渡しても `url_not_accessible` になり、**動画の内容や字幕を読むことはできません**。Claudeが `youtu.be` の短縮URLやoEmbed APIなど別のURLで回避しようとしても、「会話に登場していないURLは取得できない」という安全上の制限により `url_not_in_prior_context` で止まります（仕様どおりの挙動です）。
-> 動画を要約したい場合は、YouTubeの「文字起こしを表示」からテキストをコピーして貼り付けてください。
+思考は回答と同じ出力上限を使うため、出力上限は回答枠（`CLAUDE_MAX_TOKENS`）に思考の余地（low 4k／medium 8k／high 16k／xhigh・max 32kトークン）を足した値にします。1回答の上限額で思考の余地が半分も取れない場合は、思考量を1段ずつ下げ、その思考量の公開スコアで比較します。既定の$0.25ではOpusのhighは十分な余地を取れないため、品質優先でもGPT-6.1 Solのhighが選ばれます。Opusをhighで使うには `AI_MAX_ANSWER_USD` を$0.50程度に上げてください。
 
-> **セキュリティ上の注意**
-> リンク読み込みを有効にすると、Claudeは第三者が書いた外部ページの内容を読み込みます。ページ内にClaude向けの指示文が仕込まれていた場合（プロンプトインジェクション）、回答が影響を受ける可能性があります。信用できないリンクを読ませる際は、返ってきた内容を鵜呑みにしないでください。機密情報を扱う会話では、`/settings` からOFFにしておくのが安全です。
+公開指標を確認したモデルがある場合は、それを優先し、確認がない候補には動作テストの判定を使います。名前のmini/flash等による優先は、公開指標がない候補同士の従来の補助方針として残します。全モードで予算・添付・文脈・障害停止を確認します。各社最大2個、質問ごとに最大6個を候補とします。
 
-### 画像・PDFの読み取り
+公開指標は90日で期限切れになり、Fast/Preview/新バージョンへ継承しません。ベンチマークの自動取得・再レビューはまだ未実装で、採用表の再確認が必要です。モデル・料金の日次更新と小規模動作テストは継続します。スコアをBotの成績や請求額として扱いません。
+手動では指定モデルを維持し、思考だけを調整します。Gatewayカタログで対応するeffortの範囲へ丸め、budget_tokensのみ対応するモデルではlow/medium/highで出力上限の25%/50%/75%を配分（モデル最小値・最大値と回答用256token確保を優先）します。思考必須のモデルで旧OFF設定を使う場合は最低effortへ丸めます。思考非対応モデルではこの調整は効きません。旧OFF/xhigh/maxの保存値は維持し、画面上はコスト優先/品質優先にまとめます。
 
-`/claude` の `attachment:` で直接添付するか、画像やPDFが添付されたメッセージを右クリックすると、その中身を読み取って回答します。
+モデル一覧が1ページの場合はページ移動ボタンを出さず、無効なボタンを含めてもcustom_idが重複しない構成にします。設定更新が失敗した場合は元の操作画面を維持し、別の非公開メッセージで通知します。
 
-- 対応形式: **JPEG / PNG / GIF / WebP / PDF**（GIFはアニメーションではなく1枚目のみ）
-- 1ファイルあたり **5MB** まで、1リクエストあたり **8ファイル・合計16MB** まで（[src/constants.ts](src/constants.ts) の `MAX_ATTACHMENT_BYTES` などで変更可）
-- 上限を超えたファイル・非対応形式のファイルは**エラーにならず静かにスキップ**され、残りだけが処理されます
-- 返信チェーンを遡って複数のメッセージに画像がある場合、上限に達するまで順に読み込みます
+この少数の問題は基本動作の確認であり、任意の質問で最良の回答を保証するベンチマークではありません。問題は [src/model-evaluation.ts](src/model-evaluation.ts)、振り分けは [src/routing.ts](src/routing.ts) で調整できます。
 
-### 会話文脈の扱いについて（重要）
+404/408/429/5xx・タイムアウトでは、Autoのみ別の合格モデルを最大1回試します。可能なら別会社へ切り替えます。課金済みか不明な失敗は予約額を台帳に残したまま、同じ1回答の上限額の範囲で再試行します。認証・残高不足、原因不明の通信障害は再送しません。3回続けて失敗したモデルは24時間Autoから外し、他の評価済みモデルへ戻ります。以前のモデルもGatewayで利用可能な限り手動で選べます。
 
-**確実に文脈として渡るのは、右クリックしたメッセージ1通です。** これはDiscordのインタラクションに含まれるデータとして届くため、常に本文を取得できます。
+## 費用と予算
 
-それより前の返信チェーンは「取得できたら使う」という扱いです。遡りは `channel.fetch_message()` に依存しており、以下の場合には**エラーにはならず、静かに1通だけの文脈に縮退します**。
+Gatewayは**クレジットを事前購入し、利用分を残高から引く方式**です。GPT/Claude/Gemini各社のAPIキーやチャットのサブスクリプションは不要です。トークン料金への上乗せはありませんが、適用される決済手数料は別途確認してください。
 
-- Botがそのチャンネルの過去メッセージにアクセスできない場合
-- Message Content Intent が無効で、REST経由で取得した本文が空になる場合
+| 設定 | 既定値 | 内容 |
+|---|---:|---|
+| `AI_USD_JPY_RATE` | `158.10` | 設定画面の固定参考円換算。為替の自動取得はしません |
+| `AI_DEFAULT_MODEL` | `auto` | 新規ユーザーの既定モデル |
+| `AI_MONTHLY_BUDGET_USD` | `10` | Bot全体の月間予算。回答・分類・再試行・自動評価を含む |
+| `AI_MAX_ANSWER_USD` | `0.25` | 1回答の費用見積もり上限。分類・再試行と共有 |
+| `AI_EVALUATION_BUDGET_USD` | `0.50` | 月間予算のうち自動評価に使える額。`0`で有料評価を停止 |
+| `CLAUDE_MAX_TOKENS` | `4096` | 回答本文の出力枠。思考の余地は別に加算。既存環境との互換のため名前を維持 |
 
-サーバー内で確実に履歴を遡りたい場合は、通常のBot招待リンクで「メッセージ履歴の閲覧」権限付きでBotを追加し、必要に応じてDeveloper PortalでMessage Content Intentを有効化してください（どちらも任意）。
+予算月はJSTで切り替わります。中央のSQLite台帳に呼び出し前の費用を予約し、同時リクエストも同じ予算に計上します。評価は回答用の予算に含まれ、別途評価枠も確認します。評価枠を使い切ると新モデルのAuto採用は次の評価完了まで待ちますが、手動では利用できます。
 
-## 必要なもの
+予約額は「入力の見積もり×1.5＋出力上限ぶん＋提供したツールが2回ずつ呼ばれた場合の料金」です。出力は上限を超えて課金されないため、出力側には余裕を掛けません。
 
-- [Bun](https://bun.sh/) と Cloudflare アカウント（無料枠で動作します）
-- Discord アプリケーション（Bot トークン）
-- Anthropic API キー（[Anthropic Console](https://console.anthropic.com/) で発行。**Claude Pro / Max のサブスクリプションとは別に、従量課金のAPIクレジットが必要です**）
+GatewayはGeneration lookupの記録を非同期に作成するため、回答直後には確定料金を取得できません。回答はすぐ返し、StateDOのalarmが数秒〜数分おきにGeneration lookupを再試行して、思考・ツール費用を含む確定料金で予約を置き換えます。1日たっても記録が見つからない場合は予約額を残します。APIが失敗したときも、課金されたか不明なら予約を解放しません。
+
+添付・検索結果のトークン数は呼び出し前に確定できないため、Botの予算は見積もりに基づく制御です。厳密な請求上限にはGateway側のAPIキー予算も設定してください。Botの台帳は他のアプリによる同じキーの利用を含みません。
+
+公式資料: [料金](https://vercel.com/docs/ai-gateway/pricing)、[モデル一覧API](https://vercel.com/docs/ai-gateway/models-and-providers#dynamic-model-discovery)、[Generation lookup](https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api)、[キー別予算](https://vercel.com/docs/ai-gateway/observability-and-spend/budgets)。
+
+## 検索・リンク・添付
+
+- Web検索がONの場合、GatewayのBrowserbase Searchをツールとして渡し（`tool_choice: "auto"`）、使うかどうかはモデルが判断します。検索語は最後の質問文（先頭200文字）で固定です（Chat Completionsのサーバーツールは検索語を設定値で指定する仕様のため）。
+- リンク読み込みがONの場合、最後の質問にあるURL（なければ会話履歴の最後のURL）をBrowserbase Fetch（Markdown・プロキシなし）として渡し、読むかどうかはモデルが判断します。最後の質問にURLがあるときは、ツールを使えないモデルを候補から外します。複数ページを個別に読む場合は質問を分けてください。
+- 回答には実際の出典URLを含めるよう指示します。外部ページは信頼できない資料として扱います。
+- 画像はJPEG/PNG/GIF/WebP、文書はPDF。1ファイル5MB、最大8添付・合計16MB。画像はURLをGatewayへ渡します。PDFはバックグラウンド処理で取得し、実際のバイト数とPDF形式を確認してbase64で送信します。
+- Autoは画像/PDFの品質チェックも合格したモデルだけに送ります。手動の場合もカタログ上の対応機能を確認します。
+- Discordの添付URLは期限付きです。古い会話の再生成時に取得できなくなった場合は再添付が必要です。
+- 思考/エフォートはカタログの対応値に合わせます。思考を無効化できないモデルではOFFを強制できません。
+
+返信履歴は最大6メッセージです。取得権限がなければ取得できた範囲を使います。履歴を確実に使うには、Botを招待し「メッセージ履歴の閲覧」を許可し、必要に応じてMessage Content Intentを有効にしてください。
 
 ## セットアップ
 
-### 1. Discord アプリケーションを作成する
+必要なもの: Bun、Cloudflareアカウント、Discordアプリケーション、Vercel AI GatewayアカウントとAPIキー。
 
-1. [Discord Developer Portal](https://discord.com/developers/applications) を開き、**New Application** でアプリを作成します。
-2. **Installation** タブ（先にこちらから設定します。順番が重要です）:
-   - **Install Link** を **None** に設定します。ここを設定しておかないと、次の手順で Public Bot を OFF にしようとした際に `Cannot have install fields on a private application.` というエラーになります。
-   - **Installation Contexts** で **User Install** にチェックを入れます。
-   - **Default Install Settings** の **Install Contexts** で `Guilds` / `Bot's DM` / `Private Channels` の3つすべてにチェックを入れます。
-   - Scopes は `applications.commands` を指定します。
-3. **Bot** タブ:
-   - **Public Bot** を **OFF** にします。これで他人が自分のアカウントにこのアプリをインストールできなくなります（Install Link を None にした後でないとOFFにできません）。
-   - **Reset Token** を押してBotトークンを取得し、控えておきます（この画面を離れると再表示できません）。
-   - Message Content Intent は**基本的に不要**です。このBotは通常のメッセージを購読せず、スラッシュコマンドと右クリックメニュー経由でのみ動作します（前述の「深い履歴の遡り」を使いたい場合のみ有効化）。
-4. **OAuth2** タブ → **OAuth2 URL Generator**:
-   - **Install Link を None にした時点で、Installation タブの「共有用インストールリンク」は表示されなくなります。** これは仕様どおりで、壊れているわけではありません。
-   - 代わりにこのURL Generatorで `applications.commands` スコープにチェックを入れ、User Install用に生成されたURLをコピーします。
-   - そのURLを**自分自身が**ブラウザで開いてDiscordアカウントに追加します。これはアプリのオーナー（またはチームメンバー）自身が認可する操作なので、Public BotがOFFのままでも成功します。他人が同じURLを開いても認可はできません。
-   - このURLを公開のチャンネルなどに貼る必要はありません（貼っても第三者は使えませんが、念のため自分だけで使ってください）。
+### Discord
 
-> **セキュリティ上の注意**
-> `Public Bot` の OFF は、あくまで「他人がこのアプリを自分のアカウントにインストールできるか」を制御するだけです。User Install されたコマンドは、同じサーバーやグループDMにいる別のユーザーからも見えてしまう場合があります。**実際にアクセスを遮断しているのは Worker 側の許可リスト（`ALLOWED_USER_IDS` シークレット、[src/interactions.ts](src/interactions.ts) で参照）です。** この判定を外すと、あなたのAPIキーが第三者に使われる状態になります。
->
-> 誰かに使わせたい場合、その人がアプリをインストールする必要はありません。`ALLOWED_USER_IDS` にそのユーザーIDを追加するだけで、あなたが導入済みのサーバー／グループDM上で使えるようになります。
+1. [Developer Portal](https://discord.com/developers/applications)でアプリを作成し、Botトークンを発行します。
+2. InstallationでUser Installを有効化し、`applications.commands`を設定します。Guild Installは必要な場合に追加します。
+3. 非公開Botにする場合は、Install LinkをNoneにしてからPublic BotをOFFにします。
+4. `wrangler.toml`の`DISCORD_APPLICATION_ID`と`DISCORD_PUBLIC_KEY`をアプリの値に合わせます。公開鍵は秘密鍵ではありません。
+5. Discordの開発者モードから利用者のユーザーIDをコピーし、`ALLOWED_USER_IDS`にカンマ区切りで指定します。
 
-DiscordのユーザーIDは、Discordの設定で「開発者モード」を有効にしたうえで、ユーザーを右クリック →「ユーザーIDをコピー」で取得できます。
+### ローカル開発
 
-### 2. ローカルにセットアップする
-
-```bash
-git clone https://github.com/Narcissus-tazetta/Claude-for-Discord.git
-cd Claude-for-Discord
+```sh
 bun install
-cp .env.example .env
+cp .dev.vars.example .dev.vars
+bun run dev
 ```
 
-`.env` を編集して各値を設定します。
+`.dev.vars`に `DISCORD_BOT_TOKEN`、`AI_GATEWAY_API_KEY`、`ALLOWED_USER_IDS` を設定します。このファイルはGit対象外です。APIキー未設定でも起動でき、質問時に設定が必要と表示します。キー設定後に評価を動かすと、ローカルでもGatewayへの呼び出しは課金されます。
 
-| 環境変数 | 必須 | 内容 |
-|---|---|---|
-| `DISCORD_TOKEN` | ✅ | Discord Developer Portal で取得したBotトークン（コマンド登録スクリプトが使用） |
-| `ANTHROPIC_API_KEY` | ✅ | Anthropic API キー |
-| `ALLOWED_USER_IDS` | ✅ | 利用を許可するDiscordユーザーID。カンマ区切りで複数指定可 |
-| `CLAUDE_MODEL` | | 使用モデル。既定は `claude-sonnet-5` |
+### 後日、本番へ反映する場合
 
-スラッシュコマンドを登録します（初回のみ、以後はコマンド定義を変更したときだけ再実行）。
+実装だけを確認している段階では、以下の操作は不要です。
 
-```bash
+```sh
+bunx wrangler secret put DISCORD_BOT_TOKEN
+bunx wrangler secret put AI_GATEWAY_API_KEY
+bunx wrangler secret put ALLOWED_USER_IDS
+bun run deploy
+```
+
+DiscordのInteractions Endpoint URLをWorkerのURLへ設定します。新しい `/ai` とAI用コンテキストメニューを追加するときだけ、以下を実行します。登録はグローバルコマンド一覧を置き換えるので、他のコマンドを併用している場合は定義を確認してください。
+
+```sh
+cp .env.example .env
+# .envのDISCORD_BOT_TOKENを設定（既存DISCORD_TOKENも利用可）
 bun run register
 ```
 
-### 3. Cloudflare Workers にデプロイする
+旧Anthropic APIキーは新しい回答処理には使用しません。個人設定・再生成記録を保持するため、Durable Objectのクラス名と既存SQLテーブルは維持しています。
 
-このBotは [Cloudflare Workers](https://workers.cloudflare.com/) 上で動く HTTP Interactions アプリです。ゲートウェイへの常時接続が不要なため、スリープや外部pingサービスの類は一切必要ありません。無料プランの範囲で動作します。
+## 検証
 
-1. `wrangler.toml` の `DISCORD_APPLICATION_ID` / `DISCORD_PUBLIC_KEY`（Developer Portal の General Information タブに表示）を自分のアプリの値に書き換えます。
-2. まだなら `bunx wrangler login` でCloudflareアカウントにログインします。
-3. シークレットを登録します（これらは `wrangler.toml` ではなく Cloudflare 側に暗号化して保存されます）。
-   ```bash
-   bunx wrangler secret put DISCORD_BOT_TOKEN
-   bunx wrangler secret put ANTHROPIC_API_KEY
-   bunx wrangler secret put ALLOWED_USER_IDS
-   ```
-4. デプロイします。
-   ```bash
-   bun run deploy
-   ```
-   出力される `https://<name>.<subdomain>.workers.dev` のURLを控えます。
-5. Discord Developer Portal の **General Information** タブ → **Interactions Endpoint URL** に、そのURLを貼って保存します。保存が通れば署名検証まで含めて疎通しています。
+```sh
+bun run verify
+```
 
-`bun run dev`（`wrangler dev`）でローカル実行もできますが、Discordの署名検証があるため、実際に動かして確認するには公開URLが必要です（`wrangler dev --remote` や一時的なトンネルを使う方法もあります）。
+lint、Workersランタイム型（`worker-configuration.d.ts`）が `compatibility_date` と一致するかの確認、型チェック、Bunテストを実行します。`compatibility_date` を変えたら `bun run types` で型を再生成してください。テストではSQLiteとモックAPIを使い、実際のGateway/Discordには接続しません。モデル採用、予算予約、費用表示、エラー時の再送制御、会話・再生成・分割後の非公開設定を確認します。
 
-### 4. 費用の上限を設定する（推奨）
+実際の回答品質とGatewayとの実接続は、APIキーを設定した環境で別途確認してください。リクエスト本文・添付URL・APIキーを利用ログへ出力せず、モデル・トークン数（思考分を含む）・終了理由・概算費用・振り分け結果だけを記録します。
 
-[Anthropic Console](https://console.anthropic.com/) の **Billing → Usage limits** で月間の上限額を設定しておくと、想定外の呼び出しが発生しても請求が青天井になりません。
+## ソース
 
-## 設定のカスタマイズ
-
-[src/constants.ts](src/constants.ts) の定数で調整できます。
-
-- `HISTORY_DEPTH` — 返信チェーンを遡る最大メッセージ数（既定 6）
-- `DISCORD_CHUNK_LIMIT` — 分割送信の1メッセージあたり文字数（既定 1900）
-- `CLAUDE_MAX_TOKENS`（`wrangler.toml` の環境変数） — 回答の最大トークン数（既定 4096）。長い回答がここに書いてある注記付きで途中で切れる場合は増やしてください。
-
-## 既知の制限
-
-- **モデルによって使える機能が異なり、Botが自動で調整します。** Claude Haiku 4.5 は思考モードとエフォートに非対応（送るとAPIエラー）なので、選択時は内部的に送信を省略します。同じ理由で、web検索とリンク読み込みも Haiku 4.5 には旧世代のツール版（`web_search_20250305` / `web_fetch_20250910`）を、それ以外には最新版（`web_search_20260318` / `web_fetch_20260318`）を自動的に使い分けます。最新版は内部でコード実行を使うため、この切り替えを外すと Haiku 4.5 で400エラーになります。
-- **YouTubeの動画内容は読めません。** 詳細は「リンクの読み込み」の注記を参照してください。
-- 添付ファイルは画像とPDFのみ対応です。動画・音声・テキストファイル・ZIPなどは読み取りません。
-- 回答内のリンクは「取得元」として一覧表示されますが、本文中の該当箇所に紐づく引用（Citations）は有効にしていません。
-- レート制限やリトライは実装していません。
-
-## ライセンス
-
-[MIT](LICENSE)
+- [src/gateway.ts](src/gateway.ts): HTTP API、添付/思考の変換、確定料金の照会
+- [src/model-registry.ts](src/model-registry.ts): モデル一覧、評価状態、価格帯
+- [src/model-evaluation.ts](src/model-evaluation.ts): Auto小規模な基本動作テスト
+- [src/routing.ts](src/routing.ts): 質問分類、費用と機能による候補選択
+- [src/ai.ts](src/ai.ts): 分類・回答・再試行と費用表示
+- [src/budget.ts](src/budget.ts): 同時呼び出しを含む予算台帳
+- [src/state-do.ts](src/state-do.ts): 設定、モデル更新、予算、再生成記録の永続化
+- [src/job-do.ts](src/job-do.ts): キューとDiscordへの送信

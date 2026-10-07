@@ -1,6 +1,15 @@
-import { CMD_CLAUDE, CMD_CONTINUE, CMD_REGENERATE, CMD_SETTINGS } from "./commands";
+import {
+  CMD_AI,
+  CMD_CLAUDE,
+  CMD_CONTINUE,
+  CMD_CONTINUE_AI,
+  CMD_REGENERATE,
+  CMD_REGENERATE_AI,
+  CMD_SETTINGS,
+} from "./commands";
 import {
   allowedUserIds,
+  EFFORT_LEVELS,
   type Env,
   EPHEMERAL,
   MSG_ATTACHMENT_UNREADABLE,
@@ -11,12 +20,26 @@ import {
 } from "./constants";
 import { isSupportedAttachment } from "./history";
 import type { Job } from "./job-do";
+import { DISCOVERY_VERSION, type Registry } from "./model-registry";
 import {
   CID_EFFORT,
+  CID_FILTER,
+  CID_MODE,
   CID_MODEL,
+  CID_PAGE,
+  CID_QUALITY,
+  CID_REFRESH,
   CID_TOGGLE,
+  CID_VIEW,
+  CID_VISIBILITY,
+  MAIN_VIEW,
+  MODEL_FILTERS,
+  type ModelFilter,
+  modelBrowser,
+  type SettingsView,
   settingsComponents,
   settingsSummary,
+  usdJpyRate,
 } from "./settings-ui";
 import type { PrefKey, StateDO } from "./state-do";
 import {
@@ -73,13 +96,36 @@ function optionValues(interaction: Interaction): Record<string, string | number 
   return out;
 }
 
-function settingsResponse(type: number, userId: string, prefs: Prefs): Response {
+async function settingsResponse(
+  type: number,
+  userId: string,
+  prefs: Prefs,
+  env: Env,
+  view: SettingsView = MAIN_VIEW,
+): Promise<Response> {
+  const registry = JSON.parse(await stateStub(env).getRegistryJson()) as Registry;
+  if (!registry.refreshedAt) await stateStub(env).scheduleMaintenance();
+  const status = !env.AI_GATEWAY_API_KEY
+    ? "\n\nAPIキー未設定です。設定後にモデル一覧を取得します。"
+    : !registry.models.length
+      ? "\n\nモデル一覧と品質評価を準備中です。しばらくして /settings を開き直してください。"
+      : registry.discoveryVersion !== DISCOVERY_VERSION
+        ? "\n\nモデル一覧を更新中です。しばらくして手動モデル一覧を開き直してください。"
+        : "";
+  const screen =
+    view.panel === "models"
+      ? modelBrowser(userId, prefs, registry, view, usdJpyRate(env.AI_USD_JPY_RATE))
+      : {
+          content: settingsSummary(prefs, registry, usdJpyRate(env.AI_USD_JPY_RATE)),
+          components: settingsComponents(userId, prefs),
+        };
   return json({
     type,
     data: {
-      content: settingsSummary(prefs),
-      components: settingsComponents(userId),
+      content: screen.content + status,
+      components: screen.components,
       flags: EPHEMERAL,
+      allowed_mentions: { parse: [] },
     },
   });
 }
@@ -109,14 +155,17 @@ async function handleCommand(
 ): Promise<Response> {
   switch (interaction.data?.name) {
     case CMD_CLAUDE:
+    case CMD_AI:
       return await handleClaude(interaction, env, userId);
     case CMD_SETTINGS: {
       const prefs = await stateStub(env).getPrefs(userId);
-      return settingsResponse(CB_CHANNEL_MESSAGE, userId, prefs);
+      return await settingsResponse(CB_CHANNEL_MESSAGE, userId, prefs, env);
     }
     case CMD_CONTINUE:
+    case CMD_CONTINUE_AI:
       return await handleContinueMenu(interaction, env);
     case CMD_REGENERATE:
+    case CMD_REGENERATE_AI:
       return await handleRegenerateMenu(interaction, env, userId);
     default:
       return new Response("unknown command", { status: 400 });
@@ -257,10 +306,86 @@ async function handleComponent(
 
   if (customId.startsWith(CID_MODEL)) {
     if (customId.slice(CID_MODEL.length) !== userId) return message(MSG_NOT_OWNER);
-    prefs = await state.setPref(userId, "model", interaction.data?.values?.[0] ?? "");
+    const model = interaction.data?.values?.[0] ?? "";
+    const registry = JSON.parse(await state.getRegistryJson()) as Registry;
+    if (model !== "auto" && !registry.models.some((entry) => entry.id === model)) {
+      return message("モデル一覧が更新されています。/settings を開き直してください。");
+    }
+    prefs = await state.setPref(userId, "model", model);
+  } else if (customId.startsWith(CID_MODE)) {
+    if (customId.slice(CID_MODE.length) !== userId) return message(MSG_NOT_OWNER);
+    const mode = interaction.data?.values?.[0];
+    if (mode === "manual")
+      return await settingsResponse(CB_UPDATE_MESSAGE, userId, await state.getPrefs(userId), env, {
+        panel: "models",
+        filter: "all",
+      });
+    if (mode !== "auto") return message("無効なモデル選択です。");
+    prefs = await state.setPref(userId, "model", "auto");
+  } else if (customId.startsWith(CID_QUALITY)) {
+    if (customId.slice(CID_QUALITY.length) !== userId) return message(MSG_NOT_OWNER);
+    const quality = interaction.data?.values?.[0] ?? "";
+    if (quality !== "off" && !EFFORT_LEVELS.includes(quality)) return message("無効な考え方です。");
+    prefs = await state.setAnswerQuality(userId, quality);
+  } else if (customId.startsWith(CID_VISIBILITY)) {
+    if (customId.slice(CID_VISIBILITY.length) !== userId) return message(MSG_NOT_OWNER);
+    const visibility = interaction.data?.values?.[0];
+    if (visibility !== "private" && visibility !== "public") return message("無効な公開範囲です。");
+    prefs = await state.setPref(userId, "ephemeral", visibility === "private");
+  } else if (customId.startsWith(CID_VIEW)) {
+    const [panel, owner] = customId.slice(CID_VIEW.length).split(":");
+    if (owner !== userId) return message(MSG_NOT_OWNER);
+    if (panel !== "main" && panel !== "models") return message("無効な設定画面です。");
+    return await settingsResponse(CB_UPDATE_MESSAGE, userId, await state.getPrefs(userId), env, {
+      panel,
+      filter: "all",
+    });
+  } else if (customId.startsWith(CID_REFRESH)) {
+    const [panel, owner, rawFilter, rawPage] = customId.slice(CID_REFRESH.length).split(":");
+    if (owner !== userId) return message(MSG_NOT_OWNER);
+    const page = Number(rawPage);
+    if (
+      (panel !== "main" && panel !== "models") ||
+      !MODEL_FILTERS.includes(rawFilter as ModelFilter) ||
+      !Number.isInteger(page) ||
+      page < 0
+    )
+      return message("無効な設定画面です。");
+    try {
+      await state.refreshCatalog();
+    } catch {
+      return message("モデル一覧を更新できませんでした。時間をおいて再試行してください。");
+    }
+    return await settingsResponse(CB_UPDATE_MESSAGE, userId, await state.getPrefs(userId), env, {
+      panel,
+      filter: rawFilter as ModelFilter,
+      page,
+    });
+  } else if (customId.startsWith(CID_FILTER)) {
+    if (customId.slice(CID_FILTER.length) !== userId) return message(MSG_NOT_OWNER);
+    const filter = interaction.data?.values?.[0] as ModelFilter;
+    if (!MODEL_FILTERS.includes(filter)) return message("無効な会社です。");
+    return await settingsResponse(CB_UPDATE_MESSAGE, userId, await state.getPrefs(userId), env, {
+      panel: "models",
+      filter,
+      page: 0,
+    });
   } else if (customId.startsWith(CID_EFFORT)) {
     if (customId.slice(CID_EFFORT.length) !== userId) return message(MSG_NOT_OWNER);
-    prefs = await state.setPref(userId, "effort", interaction.data?.values?.[0] ?? "");
+    const effort = interaction.data?.values?.[0] ?? "";
+    if (!EFFORT_LEVELS.includes(effort)) return message("無効なエフォートです。");
+    prefs = await state.setPref(userId, "effort", effort);
+  } else if (customId.startsWith(CID_PAGE)) {
+    const [page, owner, rawFilter = "all"] = customId.slice(CID_PAGE.length).split(":");
+    if (owner !== userId) return message(MSG_NOT_OWNER);
+    const n = Number(page);
+    if (!Number.isInteger(n) || n < 0) return message("無効なページです。");
+    if (!MODEL_FILTERS.includes(rawFilter as ModelFilter)) return message("無効な会社です。");
+    return await settingsResponse(CB_UPDATE_MESSAGE, userId, await state.getPrefs(userId), env, {
+      panel: "models",
+      filter: rawFilter as ModelFilter,
+      page: n,
+    });
   } else if (customId.startsWith(CID_TOGGLE)) {
     const [, key, owner] = customId.split(":");
     if (owner !== userId) return message(MSG_NOT_OWNER);
@@ -272,5 +397,5 @@ async function handleComponent(
     return new Response("unknown component", { status: 400 });
   }
 
-  return settingsResponse(CB_UPDATE_MESSAGE, userId, prefs);
+  return await settingsResponse(CB_UPDATE_MESSAGE, userId, prefs, env);
 }

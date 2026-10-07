@@ -35,9 +35,8 @@ export function isSupportedAttachment(att: DiscordAttachment): boolean {
 /**
  * Turn supported attachments into image/document content blocks.
  *
- * Unlike the Python original these carry a `url` source rather than base64: downloading and
- * encoding a 5MB PDF inside a Worker would blow the CPU budget, and the size/type checks
- * work off the interaction payload's metadata anyway (WORKERS_MIGRATION_PLAN §6.1).
+ * Store URLs rather than attachment bytes in history. Gateway forwards image URLs;
+ * the JobDO converts bounded PDFs to base64 immediately before inference.
  *
  * `budget` is shared across the whole reply chain so one image-heavy thread can't blow past
  * the API's request ceiling.
@@ -51,7 +50,7 @@ export function attachmentBlocks(
     if (budget.count >= MAX_ATTACHMENTS || budget.bytes >= MAX_TOTAL_ATTACHMENT_BYTES) break;
     const type = mediaType(att);
     if (!SUPPORTED_IMAGE_TYPES.has(type) && type !== PDF_TYPE) continue;
-    if (att.size > MAX_ATTACHMENT_BYTES) {
+    if (att.size > MAX_ATTACHMENT_BYTES || budget.bytes + att.size > MAX_TOTAL_ATTACHMENT_BYTES) {
       console.log(`skipping oversized attachment ${att.filename} (${att.size} bytes)`);
       continue;
     }

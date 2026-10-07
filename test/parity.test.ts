@@ -1,7 +1,6 @@
 // Parity checks against bot.py for the pure logic. Run with `bun test`.
 import { describe, expect, test } from "bun:test";
 import { chunkText } from "../src/chunk";
-import { buildRequestKwargs, concatTextBlocks, summarizeFetches } from "../src/claude";
 import { DISCORD_CHUNK_LIMIT } from "../src/constants";
 import { attachmentBlocks, newBudget, normalizeTurns } from "../src/history";
 import { settingsSummary } from "../src/settings-ui";
@@ -17,133 +16,21 @@ const base: Prefs = {
 };
 
 describe("settingsSummary", () => {
-  test("matches bot.py's default rendering", () => {
-    expect(settingsSummary(base)).toBe(
-      "**現在の設定**\n" +
-        "・表示モード: `自分だけに表示 (Ephemeral)`\n" +
-        "・モデル: `claude-sonnet-5`\n" +
-        "・思考モード: `ON (adaptive)`\n" +
-        "・エフォート: `high`\n" +
-        "・リンク読み込み: `ON`\n" +
-        "・web検索: `ON`",
-    );
+  test("renders shared Gateway thinking controls", () => {
+    const text = settingsSummary(base);
+    expect(text).toContain("次の質問から反映");
+    expect(text).toContain("品質優先");
+    expect(text).toContain("検索 ON（必要なとき）");
   });
 
-  test("blanks thinking and effort on a model that has neither", () => {
+  test("does not claim unsupported controls are sent to a selected model", () => {
     const text = settingsSummary({ ...base, model: "claude-haiku-4-5" });
-    expect(text).toContain("・思考モード: `— (このモデルは非対応)`");
-    expect(text).toContain("・エフォート: `— (このモデルは非対応)`");
+    expect(text).toContain("非対応モデルでは差が出ない場合");
+    expect(text).toContain("品質優先");
   });
 
   test("public display mode", () => {
-    expect(settingsSummary({ ...base, ephemeral: false })).toContain(
-      "・表示モード: `全員に表示 (Public)`",
-    );
-  });
-});
-
-describe("buildRequestKwargs", () => {
-  test("adaptive thinking plus the modern server tools", () => {
-    const k = buildRequestKwargs(base, 4096) as any;
-    expect(k.thinking).toEqual({ type: "adaptive" });
-    expect(k.output_config).toEqual({ effort: "high" });
-    expect(k.tools.map((t: any) => t.type)).toEqual(["web_search_20260318", "web_fetch_20260318"]);
-    expect(k.tools[1].max_content_tokens).toBe(30000);
-  });
-
-  test("Haiku 4.5 gets neither thinking nor effort, and the basic tools", () => {
-    const k = buildRequestKwargs({ ...base, model: "claude-haiku-4-5" }, 4096) as any;
-    expect(k.thinking).toBeUndefined();
-    expect(k.output_config).toBeUndefined();
-    expect(k.tools.map((t: any) => t.type)).toEqual(["web_search_20250305", "web_fetch_20250910"]);
-  });
-
-  test("Opus 5 with thinking off silently caps effort at high", () => {
-    for (const effort of ["xhigh", "max"]) {
-      const k = buildRequestKwargs(
-        { ...base, model: "claude-opus-5", thinking: false, effort },
-        4096,
-      ) as any;
-      expect(k.output_config).toEqual({ effort: "high" });
-      expect(k.thinking).toEqual({ type: "disabled" });
-    }
-  });
-
-  test("the same cap does not apply to other models, or while thinking is on", () => {
-    expect(
-      (
-        buildRequestKwargs(
-          { ...base, model: "claude-sonnet-5", thinking: false, effort: "max" },
-          4096,
-        ) as any
-      ).output_config,
-    ).toEqual({ effort: "max" });
-    expect(
-      (buildRequestKwargs({ ...base, model: "claude-opus-5", effort: "max" }, 4096) as any)
-        .output_config,
-    ).toEqual({ effort: "max" });
-  });
-
-  test("tools are omitted entirely when both are off", () => {
-    const k = buildRequestKwargs({ ...base, web_fetch: false, web_search: false }, 4096) as any;
-    expect(k.tools).toBeUndefined();
-  });
-});
-
-describe("concatTextBlocks", () => {
-  test("joins adjacent text blocks with no separator, so a citation split doesn't orphan punctuation", () => {
-    // Reproduces the reported bug: citations split "...設立しました。" so the "。" arrives as
-    // its own text block. Joining with "\n\n" left it stranded on a blank paragraph.
-    expect(
-      concatTextBlocks([
-        { type: "text", text: "Anthropicを設立しました" },
-        { type: "text", text: "。" },
-        { type: "text", text: "\n\nAnthropicの企業形態はPBCです" },
-        { type: "text", text: "。" },
-      ]),
-    ).toBe("Anthropicを設立しました。\n\nAnthropicの企業形態はPBCです。");
-  });
-
-  test("skips non-text blocks (thinking, tool_use, tool_result)", () => {
-    expect(
-      concatTextBlocks([
-        { type: "thinking", thinking: "..." },
-        { type: "text", text: "hello" },
-        { type: "server_tool_use", name: "web_search" },
-        { type: "text", text: " world" },
-      ]),
-    ).toBe("hello world");
-  });
-
-  test("empty content yields an empty string", () => {
-    expect(concatTextBlocks([])).toBe("");
-  });
-});
-
-describe("summarizeFetches", () => {
-  test("web_search results arrive as an array, web_fetch as a single object", () => {
-    const [used, failures] = summarizeFetches([
-      { type: "text", text: "hi" },
-      { type: "web_fetch_tool_result", content: { url: "https://a.example" } },
-      {
-        type: "web_search_tool_result",
-        content: [{ url: "https://b.example" }, { url: "https://a.example" }],
-      },
-    ]);
-    expect(used).toEqual(["https://a.example", "https://b.example"]);
-    expect(failures).toEqual([]);
-  });
-
-  test("errors are collected from both shapes", () => {
-    const [used, failures] = summarizeFetches([
-      {
-        type: "web_fetch_tool_result",
-        content: { type: "web_fetch_tool_result_error", error_code: "url_not_accessible" },
-      },
-      { type: "web_search_tool_result", content: { error_code: "max_uses_exceeded" } },
-    ]);
-    expect(used).toEqual([]);
-    expect(failures).toEqual(["url_not_accessible", "max_uses_exceeded"]);
+    expect(settingsSummary({ ...base, ephemeral: false })).toContain("**公開範囲**　全員に公開");
   });
 });
 

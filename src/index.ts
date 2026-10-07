@@ -1,5 +1,6 @@
 import type { Env } from "./constants";
 import { handleInteraction } from "./interactions";
+import { deferSettings, isSettingsInteraction } from "./settings-dispatch";
 import { CB_PONG, type Interaction, IT_PING } from "./types";
 import { verifyRequest } from "./verify";
 
@@ -7,7 +8,7 @@ export { JobDO } from "./job-do";
 export { StateDO } from "./state-do";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     if (request.method === "GET") return new Response("ok");
     if (request.method !== "POST") {
       return new Response("method not allowed", { status: 405 });
@@ -36,6 +37,7 @@ export default {
     }
 
     try {
+      if (isSettingsInteraction(interaction)) return deferSettings(interaction, env, ctx);
       return await handleInteraction(interaction, env);
     } catch (err) {
       // Never leave Discord hanging on a 500: it shows the user "アプリケーションが応答しませんでした".

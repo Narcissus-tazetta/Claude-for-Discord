@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
+import { askAI, ConfigurationError } from "./ai";
+import { BudgetError } from "./budget";
 import { chunkText } from "./chunk";
-import { type AnthropicConfig, AnthropicError, askClaude } from "./claude";
 import {
   type Env,
   MSG_ATTACHMENT_EXPIRED,
@@ -9,9 +10,9 @@ import {
   MSG_REGEN_SUPERSEDED,
   MSG_REGENERATED,
   MSG_REGENERATED_PARTIAL,
-  maxTokens,
 } from "./constants";
 import { DiscordClient, DiscordError } from "./discord-api";
+import { GatewayError } from "./gateway";
 import {
   attachmentBlocks,
   buildHistoryFromMessage,
@@ -19,12 +20,14 @@ import {
   normalizeTurns,
   textBlock,
 } from "./history";
+import { handleInteraction } from "./interactions";
 import type { StateDO } from "./state-do";
 import type {
   AnthropicMessage,
   ContentBlock,
   DiscordAttachment,
   DiscordMessage,
+  Interaction,
   Prefs,
 } from "./types";
 
@@ -34,6 +37,7 @@ interface JobBase {
 }
 
 export type Job =
+  | (JobBase & { kind: "settings"; interactionJson: string })
   | (JobBase & {
       kind: "slash";
       ephemeral: boolean;
@@ -85,7 +89,7 @@ export class JobDO extends DurableObject<Env> {
       return;
     }
     // Alarms are retried automatically on failure. Claim the job before doing anything
-    // billable or visible, or a retry double-charges Anthropic and double-posts the answer.
+    // billable or visible, or a retry double-charges inference and double-posts the answer.
     if (await this.ctx.storage.get<boolean>("done")) {
       // A retry of an alarm that already claimed this job. Never run it again — but the
       // first attempt may have been killed outright (a dropped connection mid-request skips
@@ -93,7 +97,11 @@ export class JobDO extends DurableObject<Env> {
       // say anything, and drop the storage it would otherwise keep — including the "done"
       // flag, which would silently swallow every later job on this object.
       if (!(await this.ctx.storage.get<boolean>("answered"))) {
-        await this.reportError(job.token, new Error("alarm was interrupted before it answered"));
+        await this.reportError(
+          job.token,
+          new Error("alarm was interrupted before it answered"),
+          job.kind === "settings",
+        );
       }
       await this.ctx.storage.deleteAll();
       return;
@@ -101,14 +109,16 @@ export class JobDO extends DurableObject<Env> {
     await this.ctx.storage.put("done", true);
 
     try {
-      if (job.kind === "regen") {
+      if (job.kind === "settings") {
+        await this.runSettings(job);
+      } else if (job.kind === "regen") {
         await this.runRegen(job);
       } else {
         await this.runAsk(job);
       }
     } catch (err) {
       console.error("job failed", job.kind, err);
-      await this.reportError(job.token, err);
+      await this.reportError(job.token, err, job.kind === "settings");
     } finally {
       await this.ctx.storage.deleteAll();
     }
@@ -122,16 +132,25 @@ export class JobDO extends DurableObject<Env> {
     return this.ctx.storage.put("answered", true);
   }
 
-  private discord(): DiscordClient {
-    return new DiscordClient(this.env);
+  private async runSettings(job: Extract<Job, { kind: "settings" }>): Promise<void> {
+    const interaction = JSON.parse(job.interactionJson) as Interaction;
+    const response = await handleInteraction(interaction, this.env);
+    if (!response.ok) throw new Error(`settings response HTTP ${response.status}`);
+    const payload = (await response.json()) as {
+      type: number;
+      data: { content: string; components?: unknown[] };
+    };
+    if (interaction.type === 3 && payload.type === 4) {
+      // Owner/validation errors are private replies, not edits to somebody else's panel.
+      await this.discord().sendFollowup(job.token, payload.data.content, true);
+    } else {
+      await this.discord().patchOriginal(job.token, payload.data.content, payload.data.components);
+    }
+    await this.markAnswered();
   }
 
-  private anthropic(): AnthropicConfig {
-    return {
-      apiKey: this.env.ANTHROPIC_API_KEY,
-      baseUrl: this.env.ANTHROPIC_API_BASE || "https://api.anthropic.com",
-      maxTokens: maxTokens(this.env),
-    };
+  private discord(): DiscordClient {
+    return new DiscordClient(this.env);
   }
 
   private state(): DurableObjectStub<StateDO> {
@@ -159,7 +178,7 @@ export class JobDO extends DurableObject<Env> {
     }
 
     const prefs = await this.prefs(job.userId);
-    const answer = await askClaude(messages, prefs, this.anthropic());
+    const answer = await askAI(messages, prefs, this.env, this.state());
     const header = `**Q:** ${job.prompt}\n\n**A:**\n`;
     const chunkIds = await this.deliver(discord, job.token, job.ephemeral, header + answer);
     await this.state().saveRegenRecord({
@@ -200,11 +219,16 @@ export class JobDO extends DurableObject<Env> {
     const prefs = await this.prefs(job.userId);
     let answer: string;
     try {
-      answer = await askClaude(recordMessages, prefs, this.anthropic());
+      answer = await askAI(recordMessages, prefs, this.env, state);
     } catch (err) {
       // Discord's CDN URLs are signed and expire, so a replay of an old attachment-bearing
       // request can be rejected where the original went through (§6.1).
-      if (err instanceof AnthropicError && err.status === 400 && hasUrlSource(recordMessages)) {
+      if (
+        err instanceof GatewayError &&
+        err.attachmentRejected &&
+        err.status === 400 &&
+        hasUrlSource(recordMessages)
+      ) {
         await discord.patchOriginal(job.token, MSG_ATTACHMENT_EXPIRED);
         await this.markAnswered();
         return;
@@ -289,9 +313,18 @@ export class JobDO extends DurableObject<Env> {
     }
   }
 
-  private async reportError(token: string, err: unknown): Promise<void> {
+  private async reportError(token: string, err: unknown, settings = false): Promise<void> {
     try {
-      await this.discord().patchOriginal(token, MSG_GENERIC_ERROR);
+      const message =
+        err instanceof ConfigurationError || err instanceof BudgetError
+          ? err.message
+          : err instanceof GatewayError && err.status === 402
+            ? "AI Gatewayの残高が不足しています。クレジットを確認してください。"
+            : err instanceof GatewayError && err.status === 401
+              ? "AI GatewayのAPIキーを確認してください。"
+              : MSG_GENERIC_ERROR;
+      if (settings) await this.discord().sendFollowup(token, message, true);
+      else await this.discord().patchOriginal(token, message);
       await this.markAnswered();
     } catch (nested) {
       console.error("could not report the failure to Discord", nested, "original:", err);

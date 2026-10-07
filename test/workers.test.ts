@@ -1,0 +1,765 @@
+import { Database } from "bun:sqlite";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { BENCHMARK_REVIEWS } from "../src/benchmark-reviews";
+import type { Env } from "../src/constants";
+import { handleInteraction } from "../src/interactions";
+import {
+  DAY_MS,
+  DISCOVERY_VERSION,
+  isApproved,
+  type ModelInfo,
+  type Registry,
+  revision,
+} from "../src/model-registry";
+import { deferSettings, isSettingsInteraction } from "../src/settings-dispatch";
+import {
+  CID_FILTER,
+  CID_MODE,
+  CID_MODEL,
+  CID_PAGE,
+  CID_QUALITY,
+  CID_REFRESH,
+  CID_VIEW,
+  CID_VISIBILITY,
+} from "../src/settings-ui";
+
+mock.module("cloudflare:workers", () => ({
+  DurableObject: class {
+    constructor(
+      public ctx: any,
+      public env: any,
+    ) {}
+  },
+}));
+const { StateDO } = await import("../src/state-do");
+const { JobDO } = await import("../src/job-do");
+afterEach(() => mock.restore());
+
+function context() {
+  const db = new Database(":memory:");
+  const kv = new Map<string, any>();
+  let alarm: number | null = null;
+  let gate = Promise.resolve();
+  const ctx = {
+    storage: {
+      sql: {
+        exec: (sql: string, ...params: any[]) => {
+          const rows = db.query(sql).all(...params);
+          return { toArray: () => rows };
+        },
+      },
+      get: async (key: string) => structuredClone(kv.get(key)),
+      put: async (key: string, value: any) => {
+        kv.set(key, structuredClone(value));
+      },
+      deleteAll: async () => {
+        kv.clear();
+        alarm = null;
+      },
+      getAlarm: async () => alarm,
+      setAlarm: async (value: number) => {
+        alarm = value;
+      },
+      transactionSync: (fn: () => any) => db.transaction(fn)(),
+    },
+    blockConcurrencyWhile: (fn: () => Promise<any>) => {
+      const result = gate.then(fn);
+      gate = result.then(() => {});
+      return result;
+    },
+  };
+  return { ctx, kv, db, ready: () => gate };
+}
+function setup(extra: Partial<Env> = {}) {
+  const storage = context();
+  const env = {
+    AI_GATEWAY_API_KEY: "test-key",
+    AI_GATEWAY_BASE_URL: "https://mock.invalid/v1",
+    DISCORD_APPLICATION_ID: "app",
+    DISCORD_API_BASE: "https://discord.mock/v10",
+    DISCORD_BOT_TOKEN: "bot-test",
+    ALLOWED_USER_IDS: "123",
+    CLAUDE_MAX_TOKENS: "4096",
+    ...extra,
+  } as Env;
+  const state = new StateDO(storage.ctx as any, env);
+  env.STATE_DO = { idFromName: (name: string) => name, get: () => state } as any;
+  return { ...storage, env, state };
+}
+function model(id = "google/gemini-test"): ModelInfo {
+  return {
+    id,
+    name: id,
+    released: 100,
+    context: 100_000,
+    maxOutput: 4096,
+    tags: [],
+    input: 0.1e-6,
+    output: 0.4e-6,
+    preview: false,
+    reasoning: [],
+  };
+}
+function registry(): Registry {
+  const m = model();
+  return {
+    discoveryVersion: DISCOVERY_VERSION,
+    refreshedAt: Date.now(),
+    models: [m],
+    evaluations: {
+      [m.id]: {
+        revision: revision(m),
+        testedAt: Date.now(),
+        basic: true,
+        balanced: true,
+        complex: true,
+        vision: false,
+        pdf: false,
+        latencyMs: 1,
+        failures: 0,
+        disabledUntil: 0,
+      },
+    },
+  };
+}
+const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status });
+const answers = [
+  '{"name":"さかな","count":3}',
+  "391",
+  "会議は木曜日に東京で開催される。",
+  '{"intervals":[["09:30","10:00"],["11:00","11:30"]]}',
+  '{"method":"Array.from"}',
+  '{"duration":14,"critical_path":["A","C","E","F"]}',
+];
+
+describe("StateDO", () => {
+  test("defaults to Auto and retains existing user preferences", async () => {
+    const { state, ready } = setup();
+    await ready();
+    expect(state.getPrefs("new")).toMatchObject({ model: "auto", effort: "medium" });
+    state.setPref("old", "model", "claude-haiku-4-5");
+    state.setPref("old", "ephemeral", false);
+    expect(state.getPrefs("old")).toMatchObject({ model: "claude-haiku-4-5", ephemeral: false });
+  });
+  test("concurrent bootstraps share one catalog fetch and one complete evaluation suite", async () => {
+    const { state, ready, kv } = setup();
+    await ready();
+    let catalog = 0;
+    let paid = 0;
+    spyOn(globalThis, "fetch").mockImplementation((async (url: string) => {
+      if (url.includes("/models")) {
+        catalog++;
+        return json({
+          data: [
+            {
+              id: "google/gemini-test",
+              name: "Test",
+              type: "language",
+              context_window: 100000,
+              max_tokens: 4096,
+              tags: [],
+              created: 100,
+              pricing: { input: "0.0000001", output: "0.0000004" },
+            },
+          ],
+        });
+      }
+      if (url.includes("/generation")) return json({ data: { total_cost: 0.001 } });
+      if (url.includes("/chat/completions")) {
+        const answer = answers[paid++];
+        return json({
+          id: `g${paid}`,
+          choices: [{ message: { content: answer }, finish_reason: "stop" }],
+        });
+      }
+      throw new Error("unexpected request");
+    }) as any);
+    const responses = await Promise.all([state.prepareRegistry(), state.prepareRegistry()]);
+    expect(catalog).toBe(1);
+    expect(paid).toBe(6);
+    expect(responses[0]).toEqual(responses[1]);
+    const result = JSON.parse(responses[0]) as Registry;
+    expect(isApproved(result, result.models[0])).toBe(true);
+    expect(kv.get("ai_evaluation_day").ids).toHaveLength(1);
+  });
+  test("incomplete evaluations expose a safe reason and daily progress without revealing credentials", async () => {
+    const { state, ready, kv } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    kv.get("ai_registry").evaluations = {};
+    spyOn(globalThis, "fetch").mockImplementation(
+      (async () => new Response("Insufficient credit", { status: 402 })) as any,
+    );
+    const result = JSON.parse(await state.prepareRegistry());
+    expect(result.progress.attemptsToday).toBe(1);
+    expect(result.progress.lastFailure.reason).toBe("Gateway残高不足");
+    expect(result.evaluations).toEqual({});
+    expect(JSON.stringify(result.progress)).not.toContain("test-key");
+  });
+  test("obsolete safety-model attempts cannot prevent general chat bootstrap; valid attempts still do", async () => {
+    const { state, ready, kv } = setup();
+    await ready();
+    const day = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    kv.set("ai_registry", { ...registry(), evaluations: {} });
+    kv.set("ai_evaluation_day", {
+      day,
+      ids: ["openai/gpt-oss-safeguard-120b", "anthropic/claude-test"],
+    });
+    let paid = 0;
+    spyOn(globalThis, "fetch").mockImplementation((async (url: string) => {
+      if (url.includes("/generation")) return json({ data: { total_cost: 0.001 } });
+      return json({
+        id: `g${paid}`,
+        choices: [{ message: { content: answers[paid++] }, finish_reason: "stop" }],
+      });
+    }) as any);
+    const result = JSON.parse(await state.prepareRegistry());
+    expect(paid).toBe(6);
+    expect(isApproved(result, result.models[0])).toBe(true);
+    expect(result.progress.attemptsToday).toBe(2);
+    expect(kv.get("ai_evaluation_day").ids).toEqual(["anthropic/claude-test", model().id]);
+    kv.get("ai_registry").evaluations = {};
+    await state.prepareRegistry();
+    expect(paid).toBe(6);
+  });
+  test("manual catalog preparation never performs paid evaluation", async () => {
+    const { state, ready } = setup();
+    await ready();
+    const fetcher = spyOn(globalThis, "fetch").mockImplementation((async (url: string) => {
+      expect(url).toContain("/models");
+      return json({
+        data: [
+          {
+            id: "google/gemini-test",
+            type: "language",
+            context_window: 100000,
+            max_tokens: 4096,
+            tags: [],
+            pricing: { input: "0.0000001", output: "0.0000004" },
+          },
+        ],
+      });
+    }) as any);
+    const result = JSON.parse(await state.prepareRegistry(false));
+    expect(result.models).toHaveLength(1);
+    expect(result.evaluations).toEqual({});
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  test("catalog upgrades refresh existing snapshots without losing user preferences", async () => {
+    const { state, ready, kv, ctx } = setup();
+    await ready();
+    const old = registry();
+    delete old.discoveryVersion;
+    kv.set("ai_registry", old);
+    state.setPref("123", "model", model().id);
+    await state.getRegistryJson();
+    expect(await ctx.storage.getAlarm()).not.toBeNull();
+    const fetcher = spyOn(globalThis, "fetch").mockImplementation(
+      (async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "deepseek/deepseek-test",
+                type: "language",
+                name: "DeepSeek",
+                context_window: 100000,
+                max_tokens: 4096,
+                pricing: { input: "0.0000003", output: "0.000001" },
+                tags: [],
+              },
+            ],
+          }),
+        )) as any,
+    );
+    const refreshed = JSON.parse(await state.prepareRegistry(false));
+    expect(refreshed.discoveryVersion).toBe(DISCOVERY_VERSION);
+    expect(refreshed.models[0].id).toBe("deepseek/deepseek-test");
+    expect(state.getPrefs("123").model).toBe(model().id);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  test("reservations are atomic and include background evaluation spend", async () => {
+    const { state, ready } = setup({ AI_MONTHLY_BUDGET_USD: "1", AI_EVALUATION_BUDGET_USD: "0.2" });
+    await ready();
+    state.reserveSpend("a", 0.15, "evaluation");
+    expect(() => state.reserveSpend("b", 0.15, "evaluation")).toThrow();
+    state.reserveSpend("c", 0.8, "answer");
+    expect(() => state.reserveSpend("d", 0.1, "answer")).toThrow();
+    state.settleSpend("c", 0.1);
+    state.reserveSpend("d", 0.1, "answer");
+  });
+  test("deferred costs settle from billing records without running maintenance early", async () => {
+    const { state, ready, kv, ctx } = setup({ AI_MONTHLY_BUDGET_USD: "1" });
+    await ready();
+    kv.set("ai_maintenance_due", Date.now() + DAY_MS);
+    state.reserveSpend("a", 0.9, "answer");
+    await state.deferSpend("a", "gen_a");
+    const alarm = await ctx.storage.getAlarm();
+    expect(alarm).toBeLessThanOrEqual(Date.now() + 5_000);
+    let lookups = 0;
+    const fetcher = spyOn(globalThis, "fetch").mockImplementation((async (url: string) => {
+      expect(url).toContain("/generation?id=gen_a");
+      lookups++;
+      return lookups === 1 ? json({}, 404) : json({ data: { total_cost: 0.01 } });
+    }) as any);
+    await state.alarm();
+    // Not ingested yet: the reservation still blocks the budget and another try is scheduled.
+    expect(() => state.reserveSpend("b", 0.2, "answer")).toThrow();
+    expect(await ctx.storage.getAlarm()).toBeLessThan(Date.now() + DAY_MS);
+    await state.alarm();
+    state.reserveSpend("b", 0.2, "answer");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(await ctx.storage.getAlarm()).toBeGreaterThan(Date.now() + DAY_MS - 60_000);
+  });
+  test("concurrent failures activate the circuit breaker without losing increments", async () => {
+    const { state, ready, kv } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    await Promise.all([
+      state.recordModelOutcome(model().id, false),
+      state.recordModelOutcome(model().id, false),
+      state.recordModelOutcome(model().id, false),
+    ]);
+    const result = JSON.parse(await state.getRegistryJson()) as Registry;
+    expect(result.evaluations[model().id].failures).toBe(3);
+    expect(isApproved(result, result.models[0])).toBe(false);
+  });
+  test("connection probes use the shared evaluation ledger, do not forge quality records, and skip confirmed models", async () => {
+    const { state, ready, kv } = setup();
+    await ready();
+    const review = BENCHMARK_REVIEWS[2];
+    const m = {
+      ...model(review.id),
+      released: review.released,
+      reasoning: [{ type: "effort", values: ["low", "medium", "high"] }],
+    };
+    kv.set("ai_registry", {
+      discoveryVersion: DISCOVERY_VERSION,
+      refreshedAt: Date.now(),
+      models: [m],
+      evaluations: {},
+    });
+    let paid = 0;
+    spyOn(globalThis, "fetch").mockImplementation((async (url: string) => {
+      if (url.includes("/generation")) return json({ data: { total_cost: 0.001 } });
+      paid++;
+      return json({
+        id: "probe",
+        choices: [{ message: { content: "CONNECTION_OK" }, finish_reason: "stop" }],
+      });
+    }) as any);
+    expect(await state.checkBenchmarkedConnections()).toEqual([
+      { model: m.id, status: "confirmed" },
+    ]);
+    expect(paid).toBe(1);
+    expect(JSON.parse(await state.getRegistryJson()).evaluations).toEqual({});
+    expect(await state.checkBenchmarkedConnections()).toEqual([
+      { model: m.id, status: "already-confirmed" },
+    ]);
+    expect(paid).toBe(1);
+    const disabled = setup({ AI_EVALUATION_BUDGET_USD: "0" });
+    await disabled.ready();
+    disabled.kv.set("ai_registry", {
+      discoveryVersion: DISCOVERY_VERSION,
+      refreshedAt: Date.now(),
+      models: [m],
+      evaluations: {},
+    });
+    expect(await disabled.state.checkBenchmarkedConnections()).toEqual([
+      { model: m.id, status: "budget-limit" },
+    ]);
+    expect(paid).toBe(1);
+  });
+  test("published models record connection outcomes and back off after three failures even without test records", async () => {
+    const { state, ready, kv } = setup();
+    await ready();
+    const review = BENCHMARK_REVIEWS[2];
+    const m = { ...model(review.id), released: review.released };
+    kv.set("ai_registry", {
+      discoveryVersion: DISCOVERY_VERSION,
+      refreshedAt: Date.now(),
+      models: [m],
+      evaluations: {},
+    });
+    await state.recordModelOutcome(m.id, true);
+    let result = JSON.parse(await state.getRegistryJson());
+    expect(result.evaluations).toEqual({});
+    expect(result.outcomes[m.id].successes).toBe(1);
+    expect(isApproved(result, m)).toBe(true);
+    await Promise.all([
+      state.recordModelOutcome(m.id, false),
+      state.recordModelOutcome(m.id, false),
+      state.recordModelOutcome(m.id, false),
+    ]);
+    result = JSON.parse(await state.getRegistryJson());
+    expect(result.outcomes[m.id].failures).toBe(3);
+    expect(isApproved(result, m)).toBe(false);
+  });
+  test("disabled evaluation and missing API keys never generate paid calls", async () => {
+    const configured = setup({ AI_EVALUATION_BUDGET_USD: "0" });
+    await configured.ready();
+    configured.kv.set("ai_registry", { ...registry(), evaluations: {} });
+    configured.kv.set("ai_evaluation_day", {
+      day: new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      ids: ["openai/gpt-previous"],
+    });
+    const fetcher = spyOn(globalThis, "fetch").mockImplementation((async () => {
+      throw new Error("must not fetch");
+    }) as any);
+    await configured.state.alarm();
+    expect(JSON.parse(await configured.state.getRegistryJson()).evaluations).toEqual({});
+    expect(await configured.ctx.storage.getAlarm()).toBeGreaterThan(Date.now() + DAY_MS - 1000);
+    const unconfigured = setup({ AI_GATEWAY_API_KEY: undefined });
+    await unconfigured.ready();
+    await unconfigured.state.scheduleMaintenance();
+    await unconfigured.state.alarm();
+    expect(await unconfigured.ctx.storage.getAlarm()).toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("Discord delivery and regeneration", () => {
+  test("refreshing a recent catalog reveals newly eligible models without paid evaluation", async () => {
+    const { state, env, ready, kv } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    const fetcher = spyOn(globalThis, "fetch").mockImplementation((async (url: string) => {
+      expect(url).toContain("/models?include_availability=true");
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: "openai/gpt-6.1-sol",
+              name: "GPT 6.1 Sol",
+              type: "language",
+              context_window: 100000,
+              max_tokens: 4096,
+              pricing: { input: "0.000002", output: "0.00001" },
+              model_eligibility: { status: "eligible" },
+            },
+            {
+              id: "anthropic/claude-sonnet-5.5",
+              name: "Sonnet 5.5",
+              type: "language",
+              context_window: 100000,
+              max_tokens: 4096,
+              pricing: { input: "0.000002", output: "0.00001" },
+              model_eligibility: { status: "eligible" },
+            },
+            {
+              id: "mistral/test",
+              name: "Mistral",
+              type: "language",
+              context_window: 100000,
+              max_tokens: 4096,
+              pricing: { input: "0.000001", output: "0.000002" },
+              model_eligibility: { status: "eligible" },
+            },
+          ],
+        }),
+      );
+    }) as any);
+    const interaction = {
+      id: "i",
+      type: 3,
+      token: "t",
+      application_id: "app",
+      user: { id: "123" },
+      data: { custom_id: `${CID_REFRESH}models:123:all:0` },
+    };
+    expect(isSettingsInteraction(interaction)).toBe(true);
+    const response = (await (await handleInteraction(interaction, env)).json()) as any;
+    expect(response.type).toBe(7);
+    expect(response.data.components[1].components[0].options.map((o: any) => o.value)).toContain(
+      "openai/gpt-6.1-sol",
+    );
+    expect(JSON.parse(await state.getRegistryJson()).models).toHaveLength(3);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(state.getPrefs("123").model).toBe("auto");
+    await handleInteraction(
+      { ...interaction, data: { custom_id: `${CID_REFRESH}models:999:all:0` } },
+      env,
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  test("settings ACK does not wait for a slow Durable Object and remains private", async () => {
+    const { env, ready } = setup();
+    await ready();
+    let finish: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const jobs: any[] = [];
+    env.JOB_DO = {
+      idFromName: (name: string) => name,
+      get: () => ({
+        start: async (job: any) => {
+          jobs.push(job);
+          await pending;
+        },
+      }),
+    } as any;
+    const tasks: Promise<any>[] = [];
+    const ctx = { waitUntil: (task: Promise<any>) => tasks.push(task) } as any;
+    const interaction = {
+      id: "i",
+      type: 3,
+      token: "t",
+      application_id: "app",
+      user: { id: "123" },
+      data: { custom_id: `${CID_MODE}123`, values: ["manual"] },
+    };
+    expect(isSettingsInteraction(interaction)).toBe(true);
+    expect(await deferSettings(interaction, env, ctx).json()).toEqual({ type: 6 });
+    expect(jobs[0].kind).toBe("settings");
+    expect(
+      await deferSettings({ ...interaction, type: 2, data: { name: "settings" } }, env, ctx).json(),
+    ).toEqual({ type: 5, data: { flags: 64 } });
+    expect(
+      await deferSettings({ ...interaction, user: { id: "999" } }, env, ctx).json(),
+    ).toMatchObject({ type: 4, data: { flags: 64 } });
+    expect(jobs.length).toBe(2);
+    finish?.();
+    await Promise.all(tasks);
+    expect(isSettingsInteraction({ ...interaction, type: 2, data: { name: "ai" } })).toBe(false);
+  });
+  test("queued settings jobs render components after acknowledgement and preserve owner errors", async () => {
+    const { env, ready, kv } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    const requests: any[] = [];
+    spyOn(globalThis, "fetch").mockImplementation((async (url: string, init: RequestInit) => {
+      requests.push({ url, method: init.method, body: JSON.parse(init.body as string) });
+      return new Response(JSON.stringify({ id: "settings-message" }));
+    }) as any);
+    const interaction = {
+      id: "i",
+      type: 3,
+      token: "t",
+      application_id: "app",
+      user: { id: "123" },
+      data: { custom_id: `${CID_MODE}123`, values: ["manual"] },
+    };
+    for (const custom_id of [`${CID_MODE}123`, `${CID_MODE}999`]) {
+      const storage = context();
+      const job = new JobDO(storage.ctx as any, env);
+      await job.start({
+        kind: "settings",
+        token: "t",
+        userId: "123",
+        interactionJson: JSON.stringify({
+          ...interaction,
+          data: { ...interaction.data, custom_id },
+        }),
+      });
+      await job.alarm();
+    }
+    expect(requests[0].method).toBe("PATCH");
+    expect(requests[0].body.components).toHaveLength(3);
+    expect(requests[0].body.content).toContain("手動モデルを選択");
+    expect(requests[0].body.flags).toBeUndefined();
+    expect(requests[1].method).toBe("POST");
+    expect(requests[1].body.flags).toBe(64);
+    expect(requests[1].body.content).toContain("あなたの設定画面ではありません");
+  });
+  test("settings delivery failure preserves the original controls and sends a private error", async () => {
+    const { env, ready, kv } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    const requests: any[] = [];
+    spyOn(globalThis, "fetch").mockImplementation((async (_url: string, init: RequestInit) => {
+      requests.push({ method: init.method, body: JSON.parse(init.body as string) });
+      return init.method === "PATCH"
+        ? new Response(JSON.stringify({ message: "Invalid Form Body" }), { status: 400 })
+        : new Response(JSON.stringify({ id: "private-error" }));
+    }) as any);
+    const storage = context();
+    const job = new JobDO(storage.ctx as any, env);
+    await job.start({
+      kind: "settings",
+      token: "t",
+      userId: "123",
+      interactionJson: JSON.stringify({
+        id: "i",
+        type: 3,
+        token: "t",
+        application_id: "app",
+        user: { id: "123" },
+        data: { custom_id: `${CID_FILTER}123`, values: ["google"] },
+      }),
+    });
+    await job.alarm();
+    expect(requests.map((request) => request.method)).toEqual(["PATCH", "POST"]);
+    expect(requests[1].body.flags).toBe(64);
+    expect(requests[1].body.content).toContain("エラーが発生");
+    expect(requests[1].body.components).toBeUndefined();
+  });
+  test("model browsing and filtering never overwrite the selected model, and selecting returns home", async () => {
+    const { state, env, ready, kv } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    const interact = async (custom_id: string, values: string[] = []) =>
+      (await (
+        await handleInteraction(
+          {
+            id: "i",
+            type: 3,
+            token: "t",
+            application_id: "app",
+            user: { id: "123" },
+            data: { custom_id, values },
+          },
+          env,
+        )
+      ).json()) as any;
+    const manual = await interact(`${CID_MODE}123`, ["manual"]);
+    expect(manual.data.content).toContain("手動モデルを選択");
+    expect(state.getPrefs("123").model).toBe("auto");
+    const filtered = await interact(`${CID_FILTER}123`, ["google"]);
+    expect(
+      filtered.data.components[0].components[0].options.find((o: any) => o.default).value,
+    ).toBe("google");
+    const page = await interact(`${CID_PAGE}1:123:google`);
+    expect(
+      page.data.components[1].components[0].options.some((o: any) => o.value === model().id),
+    ).toBe(true);
+    expect(state.getPrefs("123").model).toBe("auto");
+    const picked = await interact(`${CID_MODEL}123`, [model().id]);
+    expect(picked.data.content).toContain("AIの設定");
+    expect(state.getPrefs("123").model).toBe(model().id);
+    await interact(`${CID_MODE}123`, ["auto"]);
+    expect(state.getPrefs("123").model).toBe("auto");
+  });
+  test("quality and visibility save the intended state and reject forged settings", async () => {
+    const { state, env, ready, kv } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    const interact = async (custom_id: string, values: string[] = []) =>
+      (await (
+        await handleInteraction(
+          {
+            id: "i",
+            type: 3,
+            token: "t",
+            application_id: "app",
+            user: { id: "123" },
+            data: { custom_id, values },
+          },
+          env,
+        )
+      ).json()) as any;
+    await interact(`${CID_QUALITY}123`, ["high"]);
+    expect(state.getPrefs("123")).toMatchObject({ thinking: true, effort: "high" });
+    await interact(`${CID_QUALITY}123`, ["off"]);
+    expect(state.getPrefs("123")).toMatchObject({ thinking: false, effort: "high" });
+    await interact(`${CID_QUALITY}123`, ["medium"]);
+    expect(state.getPrefs("123")).toMatchObject({ thinking: true, effort: "medium" });
+    await interact(`${CID_VISIBILITY}123`, ["public"]);
+    expect(state.getPrefs("123").ephemeral).toBe(false);
+    await interact(`${CID_VISIBILITY}123`, ["private"]);
+    expect(state.getPrefs("123").ephemeral).toBe(true);
+    const saved = state.getPrefs("123");
+    for (const [prefix, value] of [
+      [CID_QUALITY, "high"],
+      [CID_VISIBILITY, "public"],
+      [CID_FILTER, "google"],
+      [CID_MODE, "manual"],
+    ]) {
+      expect((await interact(`${prefix}999`, [value])).data.content).toContain(
+        "あなたの設定画面ではありません",
+      );
+    }
+    await interact(`${CID_QUALITY}123`, ["invalid"]);
+    await interact(`${CID_VISIBILITY}123`, ["invalid"]);
+    await interact(`${CID_FILTER}123`, ["invalid"]);
+    expect(state.getPrefs("123")).toEqual(saved);
+    expect((await interact(`${CID_VIEW}main:999`)).data.content).toContain(
+      "あなたの設定画面ではありません",
+    );
+  });
+  test("slash answers keep every chunk private, persist replay context, and regenerate with new prefs", async () => {
+    const { state, env, kv, ready } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    const deliveries: any[] = [];
+    let paid = 0;
+    spyOn(globalThis, "fetch").mockImplementation((async (url: string, options?: RequestInit) => {
+      if (url.includes("/generation")) return json({ data: { total_cost: 0.001 } });
+      if (url.includes("/chat/completions")) {
+        paid++;
+        return json({
+          id: `g${paid}`,
+          model: model().id,
+          choices: [
+            {
+              message: { content: paid === 1 ? "あ".repeat(3000) : "再生成した回答です。" },
+              finish_reason: "stop",
+            },
+          ],
+        });
+      }
+      if (url.startsWith("https://discord.mock/")) {
+        const body = JSON.parse(String(options?.body));
+        deliveries.push({ url, body });
+        return json({
+          id: String(deliveries.length),
+          content: body.content,
+          channel_id: "channel",
+          author: { id: "app" },
+          attachments: [],
+        });
+      }
+      throw new Error("unexpected request");
+    }) as any);
+    const jobStorage = context();
+    const job = new JobDO(jobStorage.ctx as any, env);
+    await job.start({
+      kind: "slash",
+      token: "tok",
+      userId: "123",
+      ephemeral: true,
+      prompt: "こんにちは",
+      attachment: null,
+    });
+    await job.alarm();
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries[1].body.flags).toBe(64);
+    expect(deliveries.every((d) => d.body.allowed_mentions.parse.length === 0)).toBe(true);
+    const record = state.getRegenRecord("2");
+    expect(record?.chunkIds).toEqual(["1", "2"]);
+    expect(JSON.parse(record?.messagesJson ?? "[]")[0].content[0].text).toBe("こんにちは");
+    state.setPref("123", "model", model().id);
+    const regenStorage = context();
+    const regen = new JobDO(regenStorage.ctx as any, env);
+    await regen.start({ kind: "regen", token: "regen", userId: "123", messageId: "2" });
+    await regen.alarm();
+    expect(paid).toBe(2);
+    expect(deliveries[2].body.content).toContain("再生成した回答です。");
+    expect(deliveries[3].body.content).toContain("再生成後は不要");
+    expect(state.getRegenRecord("1")?.chunkIds).toEqual(["1"]);
+    expect(state.getRegenRecord("2")).toBeNull();
+  });
+  test("forged model selections and someone else's settings do not change prefs", async () => {
+    const { state, env, ready, kv } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    const interaction = {
+      id: "i",
+      type: 3,
+      token: "t",
+      application_id: "app",
+      user: { id: "123" },
+      data: { custom_id: `${CID_MODEL}123`, values: ["evil/model"] },
+    };
+    expect(
+      ((await (await handleInteraction(interaction, env)).json()) as any).data.content,
+    ).toContain("モデル一覧");
+    expect(state.getPrefs("123").model).toBe("auto");
+    interaction.data.custom_id = `${CID_MODEL}999`;
+    interaction.data.values = [model().id];
+    expect(
+      ((await (await handleInteraction(interaction, env)).json()) as any).data.content,
+    ).toContain("あなたの設定画面ではありません");
+    expect(state.getPrefs("123").model).toBe("auto");
+  });
+});
