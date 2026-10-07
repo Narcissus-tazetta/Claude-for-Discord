@@ -33,6 +33,7 @@ interface PrefRow extends Record<string, SqlStorageValue> {
   effort: string;
   web_fetch: number;
   web_search: number;
+  currency: string;
 }
 
 interface RecordRow extends Record<string, SqlStorageValue> {
@@ -49,7 +50,14 @@ interface IndexRow extends Record<string, SqlStorageValue> {
   position: number;
 }
 
-export type PrefKey = "ephemeral" | "model" | "thinking" | "effort" | "web_fetch" | "web_search";
+export type PrefKey =
+  | "ephemeral"
+  | "model"
+  | "thinking"
+  | "effort"
+  | "web_fetch"
+  | "web_search"
+  | "currency";
 
 /**
  * Singleton (idFromName("global")) holding everything that has to outlive a single
@@ -440,6 +448,10 @@ export class StateDO extends DurableObject<Env> {
           web_search  INTEGER NOT NULL DEFAULT 1
         );
       `);
+      // Tables created before the currency setting existed get the column added in place.
+      const columns = sql.exec("PRAGMA table_info(prefs)").toArray();
+      if (!columns.some((column) => column.name === "currency"))
+        sql.exec("ALTER TABLE prefs ADD COLUMN currency TEXT NOT NULL DEFAULT 'jpy'");
       sql.exec(`
         CREATE TABLE IF NOT EXISTS regen_records (
           record_id   TEXT PRIMARY KEY,
@@ -472,6 +484,7 @@ export class StateDO extends DurableObject<Env> {
       effort: "medium",
       web_fetch: true,
       web_search: true,
+      currency: "jpy",
     };
   }
 
@@ -492,6 +505,7 @@ export class StateDO extends DurableObject<Env> {
       effort: row.effort,
       web_fetch: !!row.web_fetch,
       web_search: !!row.web_search,
+      currency: row.currency === "usd" ? "usd" : "jpy",
     };
   }
 
@@ -525,15 +539,16 @@ export class StateDO extends DurableObject<Env> {
 
   private write(userId: string, p: Prefs): void {
     this.ctx.storage.sql.exec(
-      `INSERT INTO prefs (user_id, ephemeral, model, thinking, effort, web_fetch, web_search)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO prefs (user_id, ephemeral, model, thinking, effort, web_fetch, web_search, currency)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(user_id) DO UPDATE SET
          ephemeral = excluded.ephemeral,
          model = excluded.model,
          thinking = excluded.thinking,
          effort = excluded.effort,
          web_fetch = excluded.web_fetch,
-         web_search = excluded.web_search`,
+         web_search = excluded.web_search,
+         currency = excluded.currency`,
       userId,
       p.ephemeral ? 1 : 0,
       p.model,
@@ -541,6 +556,7 @@ export class StateDO extends DurableObject<Env> {
       p.effort,
       p.web_fetch ? 1 : 0,
       p.web_search ? 1 : 0,
+      p.currency,
     );
   }
 

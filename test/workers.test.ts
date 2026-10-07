@@ -13,6 +13,7 @@ import {
 } from "../src/model-registry";
 import { deferSettings, isSettingsInteraction } from "../src/settings-dispatch";
 import {
+  CID_CURRENCY,
   CID_FILTER,
   CID_MODE,
   CID_MODEL,
@@ -287,6 +288,46 @@ describe("StateDO", () => {
     expect(() => state.reserveSpend("d", 0.1, "answer")).toThrow();
     state.settleSpend("c", 0.1);
     state.reserveSpend("d", 0.1, "answer");
+  });
+  test("existing preference rows gain the currency setting, defaulting to yen", async () => {
+    const storage = context();
+    storage.db.run(`CREATE TABLE prefs (
+      user_id TEXT PRIMARY KEY, ephemeral INTEGER NOT NULL DEFAULT 1, model TEXT NOT NULL,
+      thinking INTEGER NOT NULL DEFAULT 1, effort TEXT NOT NULL DEFAULT 'high',
+      web_fetch INTEGER NOT NULL DEFAULT 1, web_search INTEGER NOT NULL DEFAULT 1)`);
+    storage.db.run("INSERT INTO prefs (user_id, model) VALUES ('123', 'auto')");
+    const state = new StateDO(storage.ctx as any, { CLAUDE_MAX_TOKENS: "4096" } as Env);
+    await storage.ready();
+    expect(state.getPrefs("123")).toMatchObject({ model: "auto", currency: "jpy" });
+    expect(state.setPref("123", "currency", "usd").currency).toBe("usd");
+    expect(state.getPrefs("123")).toMatchObject({ model: "auto", currency: "usd" });
+    expect(state.getPrefs("new").currency).toBe("jpy");
+  });
+  test("the currency button is routed as a settings action and flips only the owner's display", async () => {
+    const { env, state, ready, kv } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    const click = (customId: string) => ({
+      id: "i",
+      type: 3,
+      token: "t",
+      application_id: "app",
+      user: { id: "123" },
+      data: { custom_id: customId },
+    });
+    expect(isSettingsInteraction(click(`${CID_CURRENCY}usd:123`))).toBe(true);
+    const response = (await (
+      await handleInteraction(click(`${CID_CURRENCY}usd:123`), env)
+    ).json()) as any;
+    expect(response.type).toBe(7);
+    expect(response.data.content).toContain("**費用の表示**　ドル");
+    expect(state.getPrefs("123").currency).toBe("usd");
+    const denied = (await (
+      await handleInteraction(click(`${CID_CURRENCY}jpy:999`), env)
+    ).json()) as any;
+    expect(denied.data.content).toContain("あなたの設定画面ではありません");
+    await handleInteraction(click(`${CID_CURRENCY}eur:123`), env);
+    expect(state.getPrefs("123").currency).toBe("usd");
   });
   test("deferred costs settle from billing records without running maintenance early", async () => {
     const { state, ready, kv, ctx } = setup({ AI_MONTHLY_BUDGET_USD: "1" });

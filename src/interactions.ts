@@ -18,10 +18,12 @@ import {
   MSG_NOT_A_CLAUDE_MESSAGE,
   MSG_NOT_OWNER,
 } from "./constants";
+import { CURRENCIES, type Currency, usdJpyRate } from "./currency";
 import { isSupportedAttachment } from "./history";
 import type { Job } from "./job-do";
 import { DISCOVERY_VERSION, type Registry } from "./model-registry";
 import {
+  CID_CURRENCY,
   CID_EFFORT,
   CID_FILTER,
   CID_MODE,
@@ -39,7 +41,6 @@ import {
   type SettingsView,
   settingsComponents,
   settingsSummary,
-  usdJpyRate,
 } from "./settings-ui";
 import type { PrefKey, StateDO } from "./state-do";
 import {
@@ -386,6 +387,11 @@ async function handleComponent(
       filter: rawFilter as ModelFilter,
       page: n,
     });
+  } else if (customId.startsWith(CID_CURRENCY)) {
+    const [currency, owner] = customId.slice(CID_CURRENCY.length).split(":");
+    if (owner !== userId) return message(MSG_NOT_OWNER);
+    if (!CURRENCIES.includes(currency as Currency)) return message("無効な通貨です。");
+    prefs = await state.setPref(userId, "currency", currency);
   } else if (customId.startsWith(CID_TOGGLE)) {
     const [, key, owner] = customId.split(":");
     if (owner !== userId) return message(MSG_NOT_OWNER);

@@ -11,6 +11,7 @@ import {
 import { BudgetError, BudgetLedger, monthInJapan } from "../src/budget";
 import type { Env } from "../src/constants";
 import { MAX_ATTACHMENT_BYTES, MAX_TOTAL_ATTACHMENT_BYTES } from "../src/constants";
+import { money, usdJpyRate, yen } from "../src/currency";
 import {
   type ChatMessage,
   GatewayClient,
@@ -49,8 +50,6 @@ import {
   referenceCost,
   settingsComponents,
   settingsSummary,
-  usdJpyRate,
-  yen,
 } from "../src/settings-ui";
 import type { Prefs } from "../src/types";
 
@@ -61,6 +60,7 @@ const prefs: Prefs = {
   ephemeral: true,
   web_fetch: true,
   web_search: true,
+  currency: "usd",
 };
 const env = {
   AI_GATEWAY_API_KEY: "test-key",
@@ -425,12 +425,27 @@ describe("routing", () => {
     ).toBe(true);
     expect(rows[2].components[1].disabled).toBe(true);
   });
-  test("JPY reference uses the stated configurable rate without rounding tiny paid costs to zero", () => {
+  test("costs show only the chosen currency; yen states its fixed reference rate", () => {
     const m = model({ input: 1e-6, output: 3e-6 });
-    const summary = settingsSummary({ ...prefs, model: m.id }, approved([m]), 160);
-    expect(summary).toContain("$0.0025/回（約¥0.40）");
-    expect(summary).toContain("$0.2500/100回（約¥40.00）");
-    expect(summary).toContain("1 USD＝¥160.00で固定換算");
+    const jpy = settingsSummary({ ...prefs, model: m.id, currency: "jpy" }, approved([m]), 160);
+    expect(jpy).toContain("約¥0.40/回 ／ 約¥40.00/100回");
+    expect(jpy).toContain("入力 約¥160.00・出力 約¥480.00 / 100万token");
+    expect(jpy).toContain("1 USD＝¥160.00で固定換算");
+    expect(jpy).toContain("**費用の表示**　円");
+    expect(jpy).not.toContain("$0.0025");
+    const usd = settingsSummary({ ...prefs, model: m.id, currency: "usd" }, approved([m]), 160);
+    expect(usd).toContain("$0.0025/回 ／ $0.2500/100回");
+    expect(usd).toContain("入力 $1.00・出力 $3.00 / 100万token");
+    expect(usd).not.toContain("¥");
+    expect(money(0.00001, "usd", 160)).toBe("<$0.0001");
+    // The button offers the other currency, so a click always flips the setting.
+    const buttons = (settingsComponents("123", { ...prefs, currency: "jpy" }) as any[]).at(
+      -1,
+    ).components;
+    expect(buttons.at(-1)).toMatchObject({
+      label: "費用の表示: 円",
+      custom_id: "settings:currency:usd:123",
+    });
     expect(yen(0.0000001, 160)).toBe("¥0.01未満");
     expect(yen(0, 160)).toBe("¥0.00");
     for (const bad of [undefined, "", "0", "-1", "Infinity", "no"])
@@ -472,7 +487,7 @@ describe("routing", () => {
     const browser = modelBrowser("123", selected, registry, { panel: "models", filter: "other" });
     const options = (browser.components as any[])[1].components[0].options;
     expect(options.map((o: any) => o.value)).toEqual(["auto", m.id]);
-    expect(options[1].description).toContain("約¥0.40/回（$0.0025）");
+    expect(options[1].description).toContain("$0.0025/回");
     expect(options[1].description).toContain("Auto評価対象外");
     expect(options[1].label).toContain("deepseek");
   });
@@ -805,7 +820,10 @@ describe("Gateway protocol", () => {
     await expect(calls.complete(model(), [], 100)).rejects.toThrow("timeout");
     expect(reserved).toHaveLength(1);
     expect(settled).toEqual([null]);
-    expect(calls.costLabel).toContain("未確定");
+    expect(calls.costLabel("usd", 158.1)).toContain("未確定");
+    expect(calls.costLabel("jpy", 158.1)).toMatch(
+      /^概算 ¥0\.00（失敗した呼び出しの費用は未確定）$/,
+    );
   });
 });
 

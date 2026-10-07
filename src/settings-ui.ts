@@ -1,4 +1,5 @@
 import { BENCHMARK_REVIEW_DATE, benchmarkReview, benchmarkWarnings } from "./benchmark-reviews";
+import { type Currency, DEFAULT_USD_JPY_RATE, money, rateNote } from "./currency";
 import {
   autoEvaluationPool,
   EMPTY_REGISTRY,
@@ -21,6 +22,7 @@ export const CID_VISIBILITY = "settings:visibility:";
 export const CID_FILTER = "settings:filter:";
 export const CID_VIEW = "settings:view:";
 export const CID_REFRESH = "settings:refresh:";
+export const CID_CURRENCY = "settings:currency:";
 
 export const MODEL_FILTERS = ["all", "openai", "anthropic", "google", "other"] as const;
 export type ModelFilter = (typeof MODEL_FILTERS)[number];
@@ -63,25 +65,7 @@ function modelName(prefs: Prefs, registry: Registry): string {
 export function referenceCost(model: ModelInfo): number {
   return model.input * 1000 + model.output * 500;
 }
-function dollars(cost: number): string {
-  return cost > 0 && cost < 0.0001 ? "<$0.0001" : `$${cost.toFixed(4)}`;
-}
-// Fixed reference rate. Display the rate explicitly; billing remains in USD.
-export const DEFAULT_USD_JPY_RATE = 158.1;
-export function usdJpyRate(value?: string): number {
-  const rate = Number(value);
-  return Number.isFinite(rate) && rate > 0 ? rate : DEFAULT_USD_JPY_RATE;
-}
-export function yen(cost: number, rate = DEFAULT_USD_JPY_RATE): string {
-  const amount = cost * rate;
-  return amount > 0 && amount < 0.01
-    ? "¥0.01未満"
-    : `¥${amount.toLocaleString("ja-JP", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-function rateNote(rate: number): string {
-  return `円は参考レート1 USD＝¥${rate.toFixed(2)}で固定換算。請求はUSDです。`;
-}
-function evaluationSummary(registry: Registry): string {
+function evaluationSummary(registry: Registry, currency: Currency, rate: number): string {
   const approved = registry.models.filter((m) => isApproved(registry, m)).length;
   const pool = autoEvaluationPool(registry);
   const checked = pool.filter((m) => freshEvaluation(registry, m)).length;
@@ -89,7 +73,7 @@ function evaluationSummary(registry: Registry): string {
   const reviewed = registry.models.filter((m) => benchmarkReview(m)).length;
   return (
     `**Autoの準備**　採用済み ${approved}モデル ／ 公開指標確認 ${reviewed} ／ 動作テスト完了 ${checked}/${pool.length}候補\n` +
-    `-# 一覧全件を評価する仕組みではありません。1日${progress?.dailyLimit ?? 2}モデル・月$${(progress?.budgetUsd ?? 0.5).toFixed(2)}の評価枠。未評価も手動利用可。` +
+    `-# 一覧全件を評価する仕組みではありません。1日${progress?.dailyLimit ?? 2}モデル・月${money(progress?.budgetUsd ?? 0.5, currency, rate, 2)}の評価枠。未評価も手動利用可。` +
     (progress ? `今日の評価試行 ${progress.attemptsToday}/${progress.dailyLimit}。` : "") +
     (progress?.lastFailure
       ? `直近の未完了理由：${progress.lastFailure.reason}（${progress.lastFailure.model}）。`
@@ -102,18 +86,22 @@ function evaluationSummary(registry: Registry): string {
   );
 }
 function costSummary(prefs: Prefs, registry: Registry, rate: number): string {
+  const fmt = (cost: number) => money(cost, prefs.currency, rate);
   if (prefs.model === "auto") {
     const costs = registry.models.filter((m) => isApproved(registry, m)).map(referenceCost);
     return costs.length
-      ? `**費用の参考**　Auto候補 ${dollars(Math.min(...costs))}〜${dollars(Math.max(...costs))}/回（約${yen(Math.min(...costs), rate)}〜${yen(Math.max(...costs), rate)}）\n`
+      ? `**費用の参考**　Auto候補 ${fmt(Math.min(...costs))}〜${fmt(Math.max(...costs))}/回\n`
       : "**費用の参考**　Auto候補の評価完了後に表示\n";
   }
   const model = registry.models.find((m) => m.id === displayModelId(prefs.model));
+  const perMillion = (price: number) => money(price * 1e6, prefs.currency, rate, 2);
   return model
-    ? `**費用の参考**　${dollars(referenceCost(model))}/回（約${yen(referenceCost(model), rate)}） ／ ${dollars(referenceCost(model) * 100)}/100回（約${yen(referenceCost(model) * 100, rate)}）\n` +
-        `-# 入力 $${(model.input * 1e6).toFixed(2)}（約${yen(model.input * 1e6, rate)}）・出力 $${(model.output * 1e6).toFixed(2)}（約${yen(model.output * 1e6, rate)}） / 100万token\n`
+    ? `**費用の参考**　${fmt(referenceCost(model))}/回 ／ ${fmt(referenceCost(model) * 100)}/100回\n` +
+        `-# 入力 ${perMillion(model.input)}・出力 ${perMillion(model.output)} / 100万token\n`
     : "**費用の参考**　モデル一覧の更新後に確認してください\n";
 }
+
+const CURRENCY_LABEL: Record<Currency, string> = { jpy: "円", usd: "ドル" };
 
 export function settingsSummary(
   prefs: Prefs,
@@ -126,10 +114,11 @@ export function settingsSummary(
     `**モデル**　${modelName(prefs, registry)}\n` +
     `**回答の質 / コスト**　${quality?.label ?? prefs.effort}\n` +
     `**情報取得**　検索 ${prefs.web_search ? "ON（必要なとき）" : "OFF"} ／ リンク ${prefs.web_fetch ? "ON" : "OFF"}\n` +
-    `**公開範囲**　${prefs.ephemeral ? "自分だけ" : "全員に公開"}\n\n` +
-    evaluationSummary(registry) +
+    `**公開範囲**　${prefs.ephemeral ? "自分だけ" : "全員に公開"}\n` +
+    `**費用の表示**　${CURRENCY_LABEL[prefs.currency]}\n\n` +
+    evaluationSummary(registry, prefs.currency, rate) +
     costSummary(prefs, registry, rate) +
-    `-# ${rateNote(rate)} 目安は入力1,000＋出力500トークンの概算USD。長い履歴・添付・思考・検索で増減します。Autoではモデル選択と考え方、手動では考え方を調整します。非対応モデルでは差が出ない場合があります。`
+    `-# ${rateNote(prefs.currency, rate)} 目安は入力1,000＋出力500トークンの概算。長い履歴・添付・思考・検索で増減します。Autoではモデル選択と考え方、手動では考え方を調整します。非対応モデルでは差が出ない場合があります。`
   );
 }
 
@@ -204,6 +193,10 @@ export function settingsComponents(userId: string, prefs: Prefs): unknown[] {
           ? [button("手動モデルを変更", `${CID_VIEW}models:${userId}`)]
           : []),
         button("モデル一覧を更新", `${CID_REFRESH}main:${userId}:all:0`),
+        button(
+          `費用の表示: ${CURRENCY_LABEL[prefs.currency]}`,
+          `${CID_CURRENCY}${prefs.currency === "jpy" ? "usd" : "jpy"}:${userId}`,
+        ),
       ],
     },
   ];
@@ -261,10 +254,7 @@ export function modelBrowser(
         label: `[${model.id.split("/")[0]}] ${model.name}`.slice(0, 100),
         value: model.id,
         description:
-          `${status}｜目安 約${yen(referenceCost(model), rate)}/回（${dollars(referenceCost(model))}）`.slice(
-            0,
-            100,
-          ),
+          `${status}｜目安 ${money(referenceCost(model), prefs.currency, rate)}/回`.slice(0, 100),
         default: selected === model.id,
       };
     }),
@@ -274,9 +264,9 @@ export function modelBrowser(
       "**手動モデルを選択**\n選ぶとすぐに保存され、基本設定へ戻ります。\n\n" +
       `現在: **${modelName(prefs, registry)}**\n` +
       `一覧: ${models.length}モデル ／ ${page + 1}/${lastPage + 1}ページ\n\n` +
-      evaluationSummary(registry) +
+      evaluationSummary(registry, prefs.currency, rate) +
       costSummary(prefs, registry, rate) +
-      `-# ${rateNote(rate)} 目安は入力1,000＋出力500トークンの概算USD。思考・添付・検索は別途増減します。AutoはGPT・Claude・Geminiが対象です。Preview・未評価モデルの基本品質は未確認です。一時停止中のモデルは手動でも利用できません。` +
+      `-# ${rateNote(prefs.currency, rate)} 目安は入力1,000＋出力500トークンの概算。思考・添付・検索は別途増減します。AutoはGPT・Claude・Geminiが対象です。Preview・未評価モデルの基本品質は未確認です。一時停止中のモデルは手動でも利用できません。` +
       (!models.length
         ? "\n\nこの一覧にはまだモデルがありません。別の会社を選ぶか、しばらくして開き直してください。"
         : ""),

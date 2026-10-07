@@ -13,6 +13,7 @@ const base: Prefs = {
   effort: "high",
   web_fetch: true,
   web_search: true,
+  currency: "jpy",
 };
 
 describe("settingsSummary", () => {

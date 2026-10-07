@@ -82,6 +82,8 @@ export interface AnthropicMessage {
 
 export interface Prefs {
   ephemeral: boolean;
+  /** Display currency for cost estimates; billing is always USD. */
+  currency: import("./currency").Currency;
   model: string;
   thinking: boolean;
   effort: string;

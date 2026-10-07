@@ -1,5 +1,6 @@
 import { BudgetError, type BudgetKind, positiveSetting } from "./budget";
 import { type Env, MSG_NO_TEXT, maxTokens } from "./constants";
+import { type Currency, money, usdJpyRate } from "./currency";
 import {
   type ChatMessage,
   GatewayClient,
@@ -50,10 +51,9 @@ export class PaidCalls {
     return Math.max(0, this.limit - this.charged);
   }
   /** Token-usage estimate; the ledger is corrected to Gateway's billed total afterwards. */
-  get costLabel(): string {
-    return this.unknown
-      ? `概算 $${this.estimated.toFixed(5)}（失敗した呼び出しの費用は未確定）`
-      : `概算 $${this.estimated.toFixed(5)}`;
+  costLabel(currency: Currency, rate: number): string {
+    const amount = money(this.estimated, currency, rate, 5).replace(/^約/, "");
+    return this.unknown ? `概算 ${amount}（失敗した呼び出しの費用は未確定）` : `概算 ${amount}`;
   }
 
   async complete(
@@ -260,7 +260,7 @@ export async function askAI(
           ? `\n\n*(出力上限 ${plan.maxTokens} トークンに達しました)*`
           : "";
       const preview = model.preview ? "／Preview" : "";
-      const footer = `\n\n-# モデル: ${result.model}${preview}｜${calls.costLabel}`;
+      const footer = `\n\n-# モデル: ${result.model}${preview}｜${calls.costLabel(prefs.currency, usdJpyRate(env.AI_USD_JPY_RATE))}`;
       return (result.text.trim() ? result.text : MSG_NO_TEXT) + truncated + footer;
     } catch (error) {
       if (error instanceof GatewayError && error.canFallback) {

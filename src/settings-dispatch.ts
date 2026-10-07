@@ -2,6 +2,7 @@ import { CMD_SETTINGS } from "./commands";
 import { allowedUserIds, type Env, EPHEMERAL, MSG_DENIED, MSG_GENERIC_ERROR } from "./constants";
 import { DiscordClient } from "./discord-api";
 import {
+  CID_CURRENCY,
   CID_EFFORT,
   CID_FILTER,
   CID_MODE,
@@ -27,6 +28,7 @@ export function isSettingsInteraction(interaction: Interaction): boolean {
     (interaction.type === IT_APPLICATION_COMMAND && interaction.data?.name === CMD_SETTINGS) ||
     (interaction.type === IT_MESSAGE_COMPONENT &&
       [
+        CID_CURRENCY,
         CID_EFFORT,
         CID_FILTER,
         CID_MODE,
