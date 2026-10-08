@@ -19,13 +19,14 @@ import {
   reasoningOptions,
   toChatMessages,
 } from "../src/gateway";
-import { attachmentBlocks, newBudget } from "../src/history";
+import { attachmentBlocks, buildHistoryFromMessage, newBudget } from "../src/history";
 import { evaluateModel } from "../src/model-evaluation";
 import {
   DAY_MS,
   DISCOVERY_VERSION,
   evaluationCandidates,
   isApproved,
+  isFreeModel,
   type ModelInfo,
   mergeCatalog,
   parseCatalog,
@@ -277,7 +278,7 @@ describe("routing", () => {
     ];
     const needs = analyzeTask(chat, prefs);
     expect(serverTools(m, needs).map((t) => t.type)).toEqual([
-      "vercel:browserbase_search",
+      "vercel:perplexity_search",
       "vercel:browserbase_fetch",
     ]);
     expect(needs.fetchRequired).toBe(true);
@@ -721,6 +722,56 @@ describe("Gateway protocol", () => {
     ).toEqual([]);
     expect(budget.bytes).toBe(MAX_TOTAL_ATTACHMENT_BYTES - 100);
   });
+  test("only the latest user turns resend their files; older ones keep the name", async () => {
+    const pdf = (n: number) => ({
+      id: `a${n}`,
+      filename: `doc${n}.pdf`,
+      size: 100,
+      content_type: "application/pdf",
+      url: `https://cdn.example/doc${n}.pdf`,
+    });
+    // Reply chain: user(doc1) <- bot <- user(doc2) <- bot <- user(doc3)
+    const messages: Record<string, any> = {
+      m1: { id: "m1", channel_id: "c", author: { id: "u" }, content: "1", attachments: [pdf(1)] },
+      m2: {
+        id: "m2",
+        channel_id: "c",
+        author: { id: "app" },
+        content: "r1",
+        message_reference: { message_id: "m1" },
+      },
+      m3: {
+        id: "m3",
+        channel_id: "c",
+        author: { id: "u" },
+        content: "2",
+        attachments: [pdf(2)],
+        message_reference: { message_id: "m2" },
+      },
+      m4: {
+        id: "m4",
+        channel_id: "c",
+        author: { id: "app" },
+        content: "r2",
+        message_reference: { message_id: "m3" },
+      },
+      m5: {
+        id: "m5",
+        channel_id: "c",
+        author: { id: "u" },
+        content: "3",
+        attachments: [pdf(3)],
+        message_reference: { message_id: "m4" },
+      },
+    };
+    const discord = { appId: "app", fetchMessage: async (_c: string, id: string) => messages[id] };
+    const turns = await buildHistoryFromMessage(messages.m5, discord as any);
+    const documents = turns.flatMap((turn) =>
+      turn.content.filter((block) => block.type === "document").map((block) => block.source?.url),
+    );
+    expect(documents).toEqual(["https://cdn.example/doc2.pdf", "https://cdn.example/doc3.pdf"]);
+    expect(JSON.stringify(turns[0])).toContain("doc1.pdf（以前のメッセージのため省略）");
+  });
   test("clamps effort to catalog support and omits unadvertised controls", () => {
     const m = model({ reasoning: [{ type: "effort", values: ["low", "high"] }] });
     expect(reasoningOptions(m, { thinking: true, effort: "max" }, 1000)).toEqual({
@@ -889,6 +940,27 @@ describe("evaluation", () => {
     expect(evaluation.basic).toBe(false);
     expect(evaluation.complex).toBe(false);
   });
+  test("a failed basic probe stops the suite before further paid calls", async () => {
+    let calls = 0;
+    const evaluation = await evaluateModel(model(), async (m) => {
+      calls++;
+      return {
+        text: "wrong",
+        model: m.id,
+        generationId: null,
+        reasoningTokens: 0,
+        finishReason: "stop",
+        inputTokens: 1,
+        outputTokens: 1,
+        latencyMs: 1,
+        cost: null,
+        toolCalls: null,
+      };
+    });
+    expect(calls).toBe(1);
+    expect(evaluation.basic).toBe(false);
+    expect(evaluation.latencyMs).toBe(1);
+  });
 });
 
 describe("answer flow", () => {
@@ -905,6 +977,56 @@ describe("answer flow", () => {
       recordModelOutcome: async () => {},
     };
   }
+  test("free Auto retries only free models without paid classification or web tools", async () => {
+    const first = model({ id: "meta/free-test", input: 0, output: 0 });
+    const second = model({ id: "deepseek/free-test", input: 0, output: 0, released: 90 });
+    const store = state(approved([first, second, model()]));
+    const bodies: any[] = [];
+    spyOn(globalThis, "fetch").mockImplementation((async (_url: string, options?: RequestInit) => {
+      const body = JSON.parse(String(options?.body));
+      bodies.push(body);
+      if (bodies.length === 1) return json({}, 429);
+      return json({
+        id: "free-generation",
+        model: body.model,
+        choices: [{ message: { content: "無料の回答" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1000, completion_tokens: 500 },
+      });
+    }) as any);
+    const answer = await askAI(
+      [{ role: "user", content: [{ type: "text", text: "https://example.com を説明して" }] }],
+      { ...prefs, model: "auto-free" },
+      env,
+      store as any,
+    );
+    expect(bodies.map((body) => body.model)).toEqual([first.id, second.id]);
+    expect(bodies.every((body) => !body.tools)).toBe(true);
+    expect(answer).toContain("無料の回答");
+    expect(store.ledger.summary(Date.now()).total).toBe(0);
+  });
+  test("free Auto fails closed when prices increase, tiers cost money or candidates are untested", async () => {
+    const free = model({ id: "meta/free-test", input: 0, output: 0 });
+    const tiered = model({
+      input: 0,
+      output: 0,
+      tiers: [{ min: 10000, input: 1e-6, output: 1e-6 }],
+    });
+    expect(isFreeModel(tiered)).toBe(false);
+    expect(evaluationCandidates({ ...approved([free]), evaluations: {} })).toContainEqual(free);
+    const registry = approved([free, tiered, model()]);
+    registry.models[0] = { ...free, output: 1e-6 };
+    const fetcher = spyOn(globalThis, "fetch").mockImplementation((async () => {
+      throw new Error("must not call a paid model");
+    }) as any);
+    await expect(
+      askAI([], { ...prefs, model: "auto-free" }, env, state(registry) as any),
+    ).rejects.toThrow("無料モデルがまだありません");
+    expect(fetcher).not.toHaveBeenCalled();
+    const needs = analyzeTask([{ role: "user", content: "こんにちは" }], prefs);
+    expect(
+      rankModels({ ...approved([free]), evaluations: {} }, needs, 4096, 0.25, "auto-free"),
+    ).toHaveLength(0);
+  });
   test("classifier and answer share one ledger; billed totals replace reservations later", async () => {
     const registry = approved([model({ reasoning: [{ type: "toggle" }] })]);
     const store = state(registry);
@@ -934,12 +1056,38 @@ describe("answer flow", () => {
     expect(bodies[0].reasoning).toEqual({ enabled: false });
     expect(bodies[0].tools).toBeUndefined();
     expect(bodies[1].tool_choice).toBe("auto");
-    expect(answer).toContain("概算 $0.00260");
+    // Gateway reported no tool counts, so the offered search is shown as having run once.
+    expect(answer).toContain("概算 $0.00760");
     const pending = store.ledger.pending(10);
     expect(pending.map((row) => row.generationId)).toEqual(["g1", "g2"]);
     for (const row of pending) store.ledger.resolve(row.id, 0.001);
     expect(store.ledger.summary(Date.now()).total).toBeCloseTo(0.002);
     expect(store.ledger.oldestPending()).toBeNull();
+  });
+  test("cost shown includes server tools, preferring Gateway's own figures", async () => {
+    const answerWith = async (gateway: Record<string, unknown>) => {
+      spyOn(globalThis, "fetch").mockImplementation((async () =>
+        json({
+          id: "g",
+          choices: [
+            { message: { content: "ok", provider_metadata: { gateway } }, finish_reason: "stop" },
+          ],
+          usage: { prompt_tokens: 1000, completion_tokens: 500 },
+        })) as any);
+      return await askAI(
+        [{ role: "user", content: [{ type: "text", text: "最新情報を教えて" }] }],
+        { ...prefs, effort: "high" },
+        env,
+        state(approved([model()])) as any,
+      );
+    };
+    expect(await answerWith({ cost: "0.0123" })).toContain("概算 $0.01230");
+    expect(await answerWith({ gatewayToolCalls: { perplexity_search: 0 } })).toContain(
+      "概算 $0.00130",
+    );
+    expect(await answerWith({ gatewayToolCalls: { perplexity_search: 2 } })).toContain(
+      "概算 $0.01130",
+    );
   });
   test("quality priority skips the classifier, since it could not change the choice", async () => {
     let calls = 0;

@@ -10,6 +10,9 @@ import {
 import type { DiscordClient } from "./discord-api";
 import type { AnthropicMessage, ContentBlock, DiscordAttachment, DiscordMessage } from "./types";
 
+/** How many of the most recent user turns send their files to the model. */
+export const ATTACHMENT_TURNS = 2;
+
 export function textBlock(text: string): ContentBlock {
   return { type: "text", text };
 }
@@ -89,6 +92,7 @@ export async function buildHistoryFromMessage(
   let turns: AnthropicMessage[] = [];
   const budget = newBudget();
   let curr: DiscordMessage | null = startMessage;
+  let userTurns = 0;
 
   for (let i = 0; i < limit; i++) {
     if (curr === null) break;
@@ -97,8 +101,18 @@ export async function buildHistoryFromMessage(
     const role: "user" | "assistant" = isBot ? "assistant" : "user";
     const text = (curr.content ?? "").split(`<@${appId}>`).join("").trim();
 
-    // Only user turns carry attachments — the assistant role rejects image blocks.
-    const content: ContentBlock[] = isBot ? [] : attachmentBlocks(curr.attachments ?? [], budget);
+    // Only user turns carry attachments — the assistant role rejects image blocks. Files are
+    // re-billed on every follow-up, so older turns keep just their names.
+    let content: ContentBlock[] = [];
+    if (!isBot) {
+      userTurns += 1;
+      content =
+        userTurns <= ATTACHMENT_TURNS
+          ? attachmentBlocks(curr.attachments ?? [], budget)
+          : (curr.attachments ?? [])
+              .filter(isSupportedAttachment)
+              .map((att) => textBlock(`[添付: ${att.filename}（以前のメッセージのため省略）]`));
+    }
     if (text) content.push(textBlock(text));
     if (content.length) turns.unshift({ role, content });
 

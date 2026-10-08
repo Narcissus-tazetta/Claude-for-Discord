@@ -14,6 +14,7 @@ import {
   freshEvaluation,
   freshOutcome,
   isApproved,
+  isFreeModel,
   mergeCatalog,
   parseCatalog,
   type Registry,
@@ -23,6 +24,12 @@ import type { Prefs, RegenRecordWire } from "./types";
 
 // Gateway ingests usage asynchronously; a record still missing after this long never arrives.
 const PENDING_COST_GIVE_UP_MS = DAY_MS;
+
+function evaluationIds(ids: string[], registry: Registry): string[] {
+  return ids.filter(
+    (id) => autoFamily(id) || registry.models.some((m) => m.id === id && isFreeModel(m)),
+  );
+}
 
 // SQL row shapes. The index signature is what SqlStorage.exec<T>() asks for.
 interface PrefRow extends Record<string, SqlStorageValue> {
@@ -153,7 +160,7 @@ export class StateDO extends DurableObject<Env> {
     return JSON.stringify({
       ...registry,
       progress: {
-        attemptsToday: daily?.day === day ? daily.ids.filter(autoFamily).length : 0,
+        attemptsToday: daily?.day === day ? evaluationIds(daily.ids, registry).length : 0,
         dailyLimit: 2,
         budgetUsd: positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5),
         nextRunAt: await this.ctx.storage.getAlarm(),
@@ -204,7 +211,7 @@ export class StateDO extends DurableObject<Env> {
   }
 
   /** First Auto request bootstraps one model. Existing preferences are not overwritten. */
-  async prepareRegistry(auto = true): Promise<string> {
+  async prepareRegistry(auto = true, freeOnly = false): Promise<string> {
     try {
       await this.refreshRegistry();
     } catch (error) {
@@ -216,10 +223,12 @@ export class StateDO extends DurableObject<Env> {
     const registry = await this.registry();
     if (
       auto &&
-      !registry.models.some((model) => isApproved(registry, model)) &&
+      !registry.models.some(
+        (model) => (!freeOnly || isFreeModel(model)) && isApproved(registry, model),
+      ) &&
       Date.now() - registry.refreshedAt < 2 * DAY_MS
     )
-      await this.maintainModels();
+      await this.maintainModels(freeOnly);
     await this.ensureAlarm();
     return await this.getRegistryJson();
   }
@@ -231,9 +240,9 @@ export class StateDO extends DurableObject<Env> {
     }
   }
 
-  private async maintainModels(): Promise<void> {
+  private async maintainModels(freeOnly = false): Promise<void> {
     if (this.maintenanceInFlight) return await this.maintenanceInFlight;
-    this.maintenanceInFlight = this.evaluateNext();
+    this.maintenanceInFlight = this.evaluateNext(freeOnly);
     try {
       await this.maintenanceInFlight;
     } finally {
@@ -241,13 +250,16 @@ export class StateDO extends DurableObject<Env> {
     }
   }
 
-  private async evaluateNext(): Promise<void> {
+  private async evaluateNext(freeOnly = false): Promise<void> {
     const day = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const daily = await this.ctx.storage.get<{ day: string; ids: string[] }>("ai_evaluation_day");
-    const ids = daily?.day === day ? daily.ids.filter(autoFamily) : [];
-    if (ids.length >= 2 || positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5) === 0) return;
     const registry = await this.registry();
-    const candidates = evaluationCandidates(registry).filter((model) => !ids.includes(model.id));
+    const ids = daily?.day === day ? evaluationIds(daily.ids, registry) : [];
+    if (ids.length >= 2) return;
+    const paidEvaluation = positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5) > 0;
+    const candidates = evaluationCandidates(registry).filter(
+      (model) => !ids.includes(model.id) && ((!freeOnly && paidEvaluation) || isFreeModel(model)),
+    );
     // Bootstrap inexpensive models first and spread evaluation across all three creators.
     candidates.sort((a, b) => {
       const coverage = (id: string) =>
@@ -255,6 +267,7 @@ export class StateDO extends DurableObject<Env> {
           (m) => m.id.split("/")[0] === id.split("/")[0] && isApproved(registry, m),
         ).length;
       return (
+        Number(isFreeModel(b)) - Number(isFreeModel(a)) ||
         coverage(a.id) - coverage(b.id) ||
         a.input + a.output - (b.input + b.output) ||
         b.released - a.released
@@ -423,10 +436,13 @@ export class StateDO extends DurableObject<Env> {
       const day = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const registry = await this.registry();
       const more =
-        positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5) > 0 &&
         daily?.day === day &&
-        daily.ids.filter(autoFamily).length < 2 &&
-        evaluationCandidates(registry).some((model) => !daily.ids.includes(model.id));
+        evaluationIds(daily.ids, registry).length < 2 &&
+        evaluationCandidates(registry).some(
+          (model) =>
+            !daily.ids.includes(model.id) &&
+            (isFreeModel(model) || positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5) > 0),
+        );
       await this.ctx.storage.put(
         "ai_maintenance_due",
         Date.now() + (more ? 5 * 60 * 1000 : DAY_MS),

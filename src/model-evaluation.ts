@@ -139,10 +139,15 @@ export async function evaluateModel(
     });
   const passed = new Map<string, boolean>();
   let latencyMs = 0;
+  let run = 0;
   for (const probe of probes) {
     const result = await call(model, probe.messages);
-    passed.set(probe.name, result.finishReason === "stop" && probe.check(result.text));
+    const ok = result.finishReason === "stop" && probe.check(result.text);
+    passed.set(probe.name, ok);
     latencyMs += result.latencyMs;
+    run += 1;
+    // Every other level requires basic, so the remaining probes could not change the result.
+    if (!ok && probe.level === "basic") break;
   }
   const passLevel = (level: Probe["level"]) => {
     const group = probes.filter((probe) => probe.level === level);
@@ -158,7 +163,7 @@ export async function evaluateModel(
     complex: balanced && passLevel("complex"),
     vision: basic && passLevel("vision"),
     pdf: basic && passLevel("pdf"),
-    latencyMs: latencyMs / probes.length,
+    latencyMs: latencyMs / run,
     failures: 0,
     disabledUntil: 0,
   };

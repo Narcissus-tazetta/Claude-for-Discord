@@ -6,6 +6,7 @@ import {
   freshEvaluation,
   freshOutcome,
   isApproved,
+  isFreeModel,
   type ModelInfo,
   type Registry,
 } from "./model-registry";
@@ -57,6 +58,7 @@ export function displayModelId(id: string): string {
 }
 
 function modelName(prefs: Prefs, registry: Registry): string {
+  if (prefs.model === "auto-free") return "Auto（無料モデルのみ）";
   if (prefs.model === "auto") return "Auto（質問に合わせて自動選択）";
   return registry.models.find((m) => m.id === displayModelId(prefs.model))?.name ?? prefs.model;
 }
@@ -86,6 +88,10 @@ function evaluationSummary(registry: Registry, currency: Currency, rate: number)
   );
 }
 function costSummary(prefs: Prefs, registry: Registry, rate: number): string {
+  if (prefs.model === "auto-free") {
+    const count = registry.models.filter((m) => isFreeModel(m) && isApproved(registry, m)).length;
+    return `**無料の候補**　採用済み ${count}モデル ／ 入出力料金0\n-# 無料モードでは検索・リンク読み込みを使いません。有料モデルへの自動切り替えも行いません。\n`;
+  }
   const fmt = (cost: number) => money(cost, prefs.currency, rate);
   if (prefs.model === "auto") {
     const costs = registry.models.filter((m) => isApproved(registry, m)).map(referenceCost);
@@ -113,7 +119,9 @@ export function settingsSummary(
     "**AIの設定**\n変更はすぐに保存され、次の質問から反映されます。\n\n" +
     `**モデル**　${modelName(prefs, registry)}\n` +
     `**回答の質 / コスト**　${quality?.label ?? prefs.effort}\n` +
-    `**情報取得**　検索 ${prefs.web_search ? "ON（必要なとき）" : "OFF"} ／ リンク ${prefs.web_fetch ? "ON" : "OFF"}\n` +
+    (prefs.model === "auto-free"
+      ? "**情報取得**　無料モードでは検索・リンク読み込みOFF\n"
+      : `**情報取得**　検索 ${prefs.web_search ? "ON（必要なとき）" : "OFF"} ／ リンク ${prefs.web_fetch ? "ON" : "OFF"}\n`) +
     `**公開範囲**　${prefs.ephemeral ? "自分だけ" : "全員に公開"}\n` +
     `**費用の表示**　${CURRENCY_LABEL[prefs.currency]}\n\n` +
     evaluationSummary(registry, prefs.currency, rate) +
@@ -143,10 +151,16 @@ export function settingsComponents(userId: string, prefs: Prefs): unknown[] {
         default: prefs.model === "auto",
       },
       {
+        label: "Auto（無料）",
+        value: "auto-free",
+        description: "無料モデルのみ。検索・リンクなし、有料への切り替えなし",
+        default: prefs.model === "auto-free",
+      },
+      {
         label: "手動でモデルを選ぶ",
         value: "manual",
         description: "GPT・Claude・Gemini・その他のAIから指定",
-        default: prefs.model !== "auto",
+        default: prefs.model !== "auto" && prefs.model !== "auto-free",
       },
     ]),
     select(
@@ -161,26 +175,28 @@ export function settingsComponents(userId: string, prefs: Prefs): unknown[] {
       type: 1,
       components: [
         button(
-          `Web検索: ${prefs.web_search ? "ON" : "OFF"}`,
+          `Web検索: ${prefs.model === "auto-free" ? "無料モードではOFF" : prefs.web_search ? "ON" : "OFF"}`,
           `${CID_TOGGLE}web_search:${userId}`,
           prefs.web_search ? 1 : 2,
+          prefs.model === "auto-free",
         ),
         button(
-          `リンク読み込み: ${prefs.web_fetch ? "ON" : "OFF"}`,
+          `リンク読み込み: ${prefs.model === "auto-free" ? "無料モードではOFF" : prefs.web_fetch ? "ON" : "OFF"}`,
           `${CID_TOGGLE}web_fetch:${userId}`,
           prefs.web_fetch ? 1 : 2,
+          prefs.model === "auto-free",
         ),
       ],
     },
     select(`${CID_VISIBILITY}${userId}`, "回答を誰に表示するか", [
       {
-        label: "自分だけ（おすすめ）",
+        label: "自分だけ",
         value: "private",
         description: "他の人には回答を表示しない",
         default: prefs.ephemeral,
       },
       {
-        label: "全員に公開",
+        label: "全員に公開（おすすめ）",
         value: "public",
         description: "チャンネルを見られる全員に回答を表示",
         default: !prefs.ephemeral,
@@ -189,7 +205,7 @@ export function settingsComponents(userId: string, prefs: Prefs): unknown[] {
     {
       type: 1,
       components: [
-        ...(prefs.model !== "auto"
+        ...(prefs.model !== "auto" && prefs.model !== "auto-free"
           ? [button("手動モデルを変更", `${CID_VIEW}models:${userId}`)]
           : []),
         button("モデル一覧を更新", `${CID_REFRESH}main:${userId}:all:0`),
