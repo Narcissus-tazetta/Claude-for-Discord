@@ -1,0 +1,43 @@
+{
+  "checkedAt": "2026-10-07T23:00:49.455012+00:00",
+  "firstPassAt": "2026-10-07T22:55:46.645908+00:00",
+  "secondPassAt": "2026-10-07T22:58:03.232884+00:00",
+  "coverage": {
+    "catalogModels": 413,
+    "creators": 44,
+    "types": {
+      "embedding": 28,
+      "evaluation": 5,
+      "image": 36,
+      "language": 268,
+      "realtime": 9,
+      "reranking": 7,
+      "speech": 12,
+      "transcription": 10,
+      "video": 38
+    },
+    "withMeasurements": 198,
+    "directMeasurements": 135,
+    "referenceMeasurements": 63,
+    "adopted": 22
+  },
+  "checks": {
+    "reportCoversAllIds": true,
+    "exportedAdoptionsMatch": true,
+    "twoFreshPasses": true,
+    "catalogAndMeasurementsUnchanged": true,
+    "allSourcesParsed": true,
+    "allIdsExactlyOnce": true,
+    "rebuildMatches": true,
+    "adoptionsHaveExactConditions": true,
+    "noInferenceCalls": true
+  },
+  "changes": {
+    "added": [],
+    "removed": [],
+    "changed": [],
+    "measurements": []
+  },
+  "errors": {},
+  "passed": true
+}

@@ -1,7 +1,14 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { inflateSync } from "node:zlib";
-import { askAI, ConfigurationError, normalizeModelPreference, PaidCalls } from "../src/ai";
+import expandedReviewSnapshot from "../docs/model-review-2026-10-08.json";
+import {
+  askAI,
+  ConfigurationError,
+  freeUnavailableMessage,
+  normalizeModelPreference,
+  PaidCalls,
+} from "../src/ai";
 import {
   BENCHMARK_REVIEW_TTL,
   BENCHMARK_REVIEWED_AT,
@@ -505,7 +512,7 @@ describe("public benchmark reviews", () => {
       [2e-6, 10e-6],
       [4e-6, 20e-6],
     ];
-    return BENCHMARK_REVIEWS.map((review, i) =>
+    return BENCHMARK_REVIEWS.slice(0, 5).map((review, i) =>
       model({
         id: review.id,
         released: review.released,
@@ -524,6 +531,72 @@ describe("public benchmark reviews", () => {
       }),
     );
   }
+  test("full review covers every catalog ID and exported approvals have exact source conditions", () => {
+    const rows = expandedReviewSnapshot.models;
+    expect(rows.length).toBe(expandedReviewSnapshot.coverage.catalogModels);
+    expect(rows.length).toBe(413);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
+    expect(rows.filter((row) => row.adopted).length).toBe(BENCHMARK_REVIEWS.length);
+    const parsed = parseCatalog({ data: rows.map((row) => row.catalog) });
+    for (const review of BENCHMARK_REVIEWS) {
+      const row = rows.find((entry) => entry.id === review.id);
+      const m = parsed.find((entry) => entry.id === review.id);
+      if (!row || !m) throw new Error(`Missing or unusable review: ${review.id}`);
+      expect(row.adopted).toBe(true);
+      expect(row.match).toBe("direct");
+      const registry: Registry = { refreshedAt: now, models: [m], evaluations: {} };
+      expect(isApproved(registry, m, now)).toBe(true);
+      expect(benchmarkReview({ ...m, released: m.released + 1 }, now)).toBeUndefined();
+      expect(isApproved(registry, { ...m, id: `${m.id}-fast` }, now)).toBe(false);
+      expect(isApproved(registry, m, now + BENCHMARK_REVIEW_TTL + 1)).toBe(false);
+      for (const [effort, score] of Object.entries(review.scores)) {
+        expect(effort === "none" || row.supportedEfforts.includes(effort)).toBe(true);
+        const source = row.measurements.find(
+          (entry) =>
+            entry.effort === effort &&
+            entry.estimated === false &&
+            entry.releaseDate === row.releaseDate &&
+            Math.round(entry.score) === score,
+        );
+        expect(source).toBeDefined();
+        if (effort === "none") expect(source?.reasoning).toBe(false);
+        else expect(source?.reasoning).toBe(true);
+      }
+    }
+    for (const row of rows.filter(
+      (entry) => entry.match !== "direct" || entry.type !== "language",
+    )) {
+      expect(row.adopted).toBe(false);
+      expect(BENCHMARK_REVIEWS.some((review) => review.id === row.id)).toBe(false);
+    }
+  });
+  test("Haiku 5.5 wins normal cost-balanced requests but high does not qualify for difficult requests", () => {
+    const row = expandedReviewSnapshot.models.find(
+      (entry) => entry.id === "anthropic/claude-haiku-5.5",
+    );
+    if (!row) throw new Error("Missing Haiku review");
+    const haiku = model({
+      id: row.id,
+      released: row.released,
+      input: row.inputPerMillion / 1e6,
+      output: row.outputPerMillion / 1e6,
+      maxOutput: 128_000,
+      tags: row.tags,
+      reasoning: [{ type: "effort", values: row.supportedEfforts }],
+    });
+    const registry: Registry = {
+      refreshedAt: now,
+      models: [...reviewedModels(), haiku],
+      evaluations: {},
+    };
+    const needs = analyzeTask([{ role: "user", content: "こんにちは" }], prefs);
+    needs.tier = "balanced";
+    expect(rankModels(registry, needs, 4096, 0.25, "auto", now, "medium")[0].id).toBe(haiku.id);
+    needs.tier = "strong";
+    expect(
+      rankModels(registry, needs, 4096, 0.25, "auto", now, "medium").some((m) => m.id === haiku.id),
+    ).toBe(false);
+  });
   test("public approval is explicit and expires; fast aliases, previews and replacement releases inherit no score", () => {
     for (const m of reviewedModels()) {
       const registry: Registry = { refreshedAt: now, models: [m], evaluations: {} };
@@ -964,6 +1037,22 @@ describe("evaluation", () => {
 });
 
 describe("answer flow", () => {
+  test("free errors distinguish provider outages from quality and attachment requirements", () => {
+    const free = model({ id: "meta/free-test", input: 0, output: 0 });
+    const registry = approved([free]);
+    expect(freeUnavailableMessage(registry)).toContain("質問・回答品質・添付");
+    registry.progress = {
+      attemptsToday: 2,
+      dailyLimit: 2,
+      freeAttemptsToday: 1,
+      freeDailyLimit: 3,
+      budgetUsd: 0.5,
+      nextRunAt: null,
+      lastFailure: { model: free.id, reason: "Gatewayエラー（503）", at: Date.now() },
+    };
+    expect(freeUnavailableMessage(registry)).toContain("Gatewayエラー（503）");
+    expect(freeUnavailableMessage(registry)).toContain("有料モデルへの切り替えは行いません");
+  });
   function state(registry: Registry) {
     const db = new Database(":memory:");
     const ledger = new BudgetLedger((sql, ...params) => db.query(sql).all(...params) as any[]);
@@ -1020,7 +1109,7 @@ describe("answer flow", () => {
     }) as any);
     await expect(
       askAI([], { ...prefs, model: "auto-free" }, env, state(registry) as any),
-    ).rejects.toThrow("無料モデルがまだありません");
+    ).rejects.toThrow("利用可能な無料モデルがありません");
     expect(fetcher).not.toHaveBeenCalled();
     const needs = analyzeTask([{ role: "user", content: "こんにちは" }], prefs);
     expect(

@@ -3,6 +3,10 @@ import { type ModelEvaluation, type ModelInfo, revision } from "./model-registry
 
 export const EVALUATION_MAX_OUTPUT = 768;
 export type EvaluationCall = (model: ModelInfo, messages: ChatMessage[]) => Promise<GatewayResult>;
+export interface EvaluationCheckpoints {
+  get(name: string): Promise<GatewayResult | undefined>;
+  save(name: string, result: GatewayResult): Promise<void>;
+}
 
 interface Probe {
   name: string;
@@ -105,6 +109,7 @@ export async function evaluateModel(
   model: ModelInfo,
   call: EvaluationCall,
   now = Date.now(),
+  checkpoints?: EvaluationCheckpoints,
 ): Promise<ModelEvaluation> {
   const probes = [...TEXT_PROBES];
   if (model.tags.includes("vision"))
@@ -141,8 +146,9 @@ export async function evaluateModel(
   let latencyMs = 0;
   let run = 0;
   for (const probe of probes) {
-    const result = await call(model, probe.messages);
+    const result = (await checkpoints?.get(probe.name)) ?? (await call(model, probe.messages));
     const ok = result.finishReason === "stop" && probe.check(result.text);
+    if (ok) await checkpoints?.save(probe.name, result);
     passed.set(probe.name, ok);
     latencyMs += result.latencyMs;
     run += 1;

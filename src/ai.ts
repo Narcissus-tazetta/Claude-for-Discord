@@ -8,7 +8,14 @@ import {
   type GatewayResult,
   toChatMessages,
 } from "./gateway";
-import { DAY_MS, type ModelInfo, type Registry } from "./model-registry";
+import {
+  DAY_MS,
+  freshEvaluation,
+  isApproved,
+  isFreeModel,
+  type ModelInfo,
+  type Registry,
+} from "./model-registry";
 import {
   analyzeTask,
   answerPriority,
@@ -27,6 +34,25 @@ import type { StateDO } from "./state-do";
 import type { AnthropicMessage, Prefs } from "./types";
 
 export class ConfigurationError extends Error {}
+
+export function freeUnavailableMessage(registry: Registry): string {
+  const free = registry.models.filter(isFreeModel);
+  const suffix = "有料モデルへの切り替えは行いません。";
+  if (!free.length)
+    return `現在、利用可能な無料モデルがありません。モデル一覧を更新してください。${suffix}`;
+  const failure = registry.progress?.lastFailure;
+  if (
+    failure &&
+    free.some((model) => model.id === failure.model) &&
+    Date.now() - failure.at < DAY_MS
+  )
+    return `無料モデルの動作確認に失敗しました：${failure.reason}。提供元の復旧を約5分ごとに再確認します（無料評価の1日上限内）。${suffix}`;
+  if (free.some((model) => isApproved(registry, model)))
+    return `無料モデルは利用できますが、この質問・回答品質・添付の条件に対応する候補がありません。/settings で「バランス」または「コスト優先」を試すか、添付なしで質問してください。${suffix}`;
+  if (free.every((model) => freshEvaluation(registry, model)))
+    return `現在の無料モデルは動作テストを通過していません。無料提供元の復旧や次の評価をお待ちください。${suffix}`;
+  return `無料モデルの評価待ちです（今日の無料評価 ${registry.progress?.freeAttemptsToday ?? 0}/${registry.progress?.freeDailyLimit ?? 24}）。時間をおいて再試行してください。${suffix}`;
+}
 
 export interface SpendPort {
   reserveSpend(id: string, amount: number, kind: BudgetKind): void | Promise<void>;
@@ -131,19 +157,21 @@ export async function askAI(
   const freeOnly = prefs.model === "auto-free";
   const automatic = prefs.model === "auto" || freeOnly;
   const manual = normalizeModelPreference(prefs.model);
-  const registry = JSON.parse(await state.prepareRegistry(automatic, freeOnly)) as Registry;
+  const chat = toChatMessages(messages);
+  const needs = analyzeTask(chat, freeOnly ? { web_fetch: false, web_search: false } : prefs);
+  const priority = answerPriority(prefs);
+  const registry = JSON.parse(
+    await state.prepareRegistry(automatic, freeOnly, priority === "high" ? "strong" : needs.tier),
+  ) as Registry;
   if (Date.now() - registry.refreshedAt > 2 * DAY_MS) {
     throw new ConfigurationError(
       "モデル料金を更新できていません。時間をおいて再試行してください。",
     );
   }
-  const chat = toChatMessages(messages);
-  const needs = analyzeTask(chat, freeOnly ? { web_fetch: false, web_search: false } : prefs);
   const limit = positiveSetting(env.AI_MAX_ANSWER_USD, 0.25);
   const calls = new PaidCalls(env, state, "answer", limit);
   const output = maxTokens(env);
 
-  const priority = answerPriority(prefs);
   const heuristicTier = needs.tier;
   let classifiedTier: string | null = null;
   // Under "high" every tier gets the same score floor and score-first ordering, so the
@@ -227,7 +255,7 @@ export async function askAI(
   if (!candidates.length)
     throw new ConfigurationError(
       freeOnly
-        ? "この質問に対応する評価済みの無料モデルがまだありません。モデル一覧を更新するか、評価完了後に再試行してください。有料モデルへの切り替えは行いません。"
+        ? freeUnavailableMessage(registry)
         : automatic
           ? "この質問に対応する評価済みモデルがまだありません。/settings で手動選択するか、モデル評価の完了後に再試行してください。"
           : "指定モデルが利用できないか、添付・文脈・費用の条件を満たしていません。/settings でAutoまたは別モデルを選んでください。",
