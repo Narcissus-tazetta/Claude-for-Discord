@@ -30,10 +30,33 @@ export class DiscordError extends Error {
  * `DISCORD_API_BASE` exists so the delivery and regenerate paths can be exercised against a
  * stand-in server; unset, it is the real API.
  */
+/** Discord's per-route limit as last reported in response headers. */
+export interface RateLimit {
+  limit: number;
+  remaining: number;
+  resetAfterMs: number;
+  bucket: string | null;
+}
+
+function rateLimitOf(headers: Headers): RateLimit | null {
+  const limit = Number(headers.get("x-ratelimit-limit"));
+  const remaining = Number(headers.get("x-ratelimit-remaining"));
+  const resetAfter = Number(headers.get("x-ratelimit-reset-after"));
+  if (![limit, remaining, resetAfter].every(Number.isFinite) || !headers.has("x-ratelimit-limit"))
+    return null;
+  return {
+    limit,
+    remaining,
+    resetAfterMs: Math.ceil(resetAfter * 1000),
+    bucket: headers.get("x-ratelimit-bucket"),
+  };
+}
+
 export class DiscordClient {
   private readonly base: string;
   readonly appId: string;
   private readonly botToken: string;
+  private readonly rates = new Map<string, RateLimit>();
 
   constructor(env: Env) {
     this.base = env.DISCORD_API_BASE || DEFAULT_API;
@@ -41,8 +64,15 @@ export class DiscordClient {
     this.botToken = env.DISCORD_BOT_TOKEN;
   }
 
-  private async request(url: string, init: RequestInit): Promise<any> {
+  /** The latest limit reported for requests made with this interaction token. */
+  rateLimit(token: string): RateLimit | undefined {
+    return this.rates.get(token);
+  }
+
+  private async request(url: string, init: RequestInit, token?: string): Promise<any> {
     const res = await fetch(url, init);
+    const rate = token ? rateLimitOf(res.headers) : null;
+    if (token && rate) this.rates.set(token, rate);
     if (!res.ok) throw new DiscordError(res.status, await res.text().catch(() => ""));
     if (res.status === 204) return null;
     return await res.json();
@@ -55,15 +85,19 @@ export class DiscordClient {
    * No `flags` here: ephemerality was fixed at defer time and an edit cannot change it.
    */
   patchOriginal(token: string, content: string, components?: unknown[]): Promise<DiscordMessage> {
-    return this.request(`${this.base}/webhooks/${this.appId}/${token}/messages/@original`, {
-      method: "PATCH",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({
-        content,
-        ...(components ? { components } : {}),
-        allowed_mentions: NO_MENTIONS,
-      }),
-    });
+    return this.request(
+      `${this.base}/webhooks/${this.appId}/${token}/messages/@original`,
+      {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          content,
+          ...(components ? { components } : {}),
+          allowed_mentions: NO_MENTIONS,
+        }),
+      },
+      token,
+    );
   }
 
   /** Post an extra message on an interaction token. `wait=true` so the id comes back. */
@@ -73,18 +107,22 @@ export class DiscordClient {
     ephemeral: boolean,
     components?: unknown[],
   ): Promise<DiscordMessage> {
-    return this.request(`${this.base}/webhooks/${this.appId}/${token}?wait=true`, {
-      method: "POST",
-      headers: JSON_HEADERS,
-      // followup messages do NOT inherit the ephemeral flag from the defer; every chunk has
-      // to carry it or the tail of a long answer leaks into the channel.
-      body: JSON.stringify({
-        content,
-        flags: ephemeral ? EPHEMERAL : 0,
-        ...(components ? { components } : {}),
-        allowed_mentions: NO_MENTIONS,
-      }),
-    });
+    return this.request(
+      `${this.base}/webhooks/${this.appId}/${token}?wait=true`,
+      {
+        method: "POST",
+        headers: JSON_HEADERS,
+        // followup messages do NOT inherit the ephemeral flag from the defer; every chunk has
+        // to carry it or the tail of a long answer leaks into the channel.
+        body: JSON.stringify({
+          content,
+          flags: ephemeral ? EPHEMERAL : 0,
+          ...(components ? { components } : {}),
+          allowed_mentions: NO_MENTIONS,
+        }),
+      },
+      token,
+    );
   }
 
   /** Edit a message previously sent on this interaction token (original or followup). */
@@ -94,22 +132,30 @@ export class DiscordClient {
     content: string,
     components?: unknown[],
   ): Promise<DiscordMessage> {
-    return this.request(`${this.base}/webhooks/${this.appId}/${token}/messages/${messageId}`, {
-      method: "PATCH",
-      headers: JSON_HEADERS,
-      body: JSON.stringify({
-        content,
-        ...(components ? { components } : {}),
-        allowed_mentions: NO_MENTIONS,
-      }),
-    });
+    return this.request(
+      `${this.base}/webhooks/${this.appId}/${token}/messages/${messageId}`,
+      {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          content,
+          ...(components ? { components } : {}),
+          allowed_mentions: NO_MENTIONS,
+        }),
+      },
+      token,
+    );
   }
 
   /** Read back a message sent on this interaction token; works for ephemeral ones too. */
   getMessage(token: string, messageId: string): Promise<DiscordMessage> {
-    return this.request(`${this.base}/webhooks/${this.appId}/${token}/messages/${messageId}`, {
-      method: "GET",
-    });
+    return this.request(
+      `${this.base}/webhooks/${this.appId}/${token}/messages/${messageId}`,
+      {
+        method: "GET",
+      },
+      token,
+    );
   }
 
   /**

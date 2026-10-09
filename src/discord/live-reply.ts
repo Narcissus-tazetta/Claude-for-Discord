@@ -29,11 +29,15 @@ export function answerButtons(): unknown[] {
   ];
 }
 
-// Discord rate-limits edits per interaction token; one edit a second and a half stays clear of it
-// while still reading as a growing answer.
-const TEXT_INTERVAL_MS = 1500;
-// The status line only changes its elapsed seconds, which is not worth an edit every tick.
-const STATUS_INTERVAL_MS = 3000;
+// Discord documents no fixed edit limit and asks clients to pace by the X-RateLimit headers, so
+// frames are spread over what the bucket reports as remaining. This is only the pace before
+// the first response has reported any.
+const FALLBACK_FRAME_MS = 1500;
+// A floor even when the bucket allows more; chosen by eye, not measured.
+const MIN_FRAME_MS = 300;
+// The status line only changes its elapsed seconds.
+const STATUS_FRAME_MS = 1000;
+const TICK_MS = 250;
 const CURSOR = " ▌";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -60,6 +64,8 @@ export class LiveReply {
   private body = "";
   private lastFlush = 0;
   private notBefore = 0;
+  private frames = 0;
+  private refused = 0;
   private lastRendered = "";
   private inflight: Promise<void> | null = null;
   private ticker: ReturnType<typeof setInterval> | null = null;
@@ -92,12 +98,14 @@ export class LiveReply {
 
   async setStatus(text: string): Promise<void> {
     this.status = text;
-    this.ticker ??= setInterval(() => void this.maybeFlush(), TEXT_INTERVAL_MS);
+    this.ticker ??= setInterval(() => void this.maybeFlush(), TICK_MS);
     await this.maybeFlush();
   }
 
   async setText(partial: string): Promise<void> {
     this.body = partial;
+    // A model may pause mid-answer (e.g. searching); the ticker keeps the last frame current.
+    this.ticker ??= setInterval(() => void this.maybeFlush(), TICK_MS);
     await this.maybeFlush();
   }
 
@@ -110,6 +118,18 @@ export class LiveReply {
 
   async finish(body: string, components: unknown[], footer?: string): Promise<Delivered> {
     await this.stop();
+    const rate = this.discord.rateLimit(this.token);
+    console.log(
+      JSON.stringify({
+        event: "live_reply",
+        frames: this.frames,
+        refused: this.refused,
+        seconds: Math.round((Date.now() - this.started) / 1000),
+        limit: rate?.limit ?? null,
+        resetAfterMs: rate?.resetAfterMs ?? null,
+        bucket: rate?.bucket ?? null,
+      }),
+    );
     const chunks = chunkText(this.header + body, footer);
     let failed = false;
     const last = chunks.length - 1;
@@ -151,8 +171,7 @@ export class LiveReply {
   private async maybeFlush(): Promise<void> {
     if (this.inflight) return;
     const now = Date.now();
-    const interval = this.body ? TEXT_INTERVAL_MS : STATUS_INTERVAL_MS;
-    if (now < this.notBefore || now - this.lastFlush < interval) return;
+    if (now < this.notBefore || (!this.body && now - this.lastFlush < STATUS_FRAME_MS)) return;
     const content = this.live();
     if (content === null || content === this.lastRendered) return;
     this.lastFlush = now;
@@ -171,12 +190,26 @@ export class LiveReply {
       for (let i = 0; i < chunks.length; i++) {
         if (this.sent[i] !== chunks[i]) await this.write(i, chunks[i]);
       }
+      this.frames += 1;
+      this.notBefore = Date.now() + this.spacing();
     } catch (err) {
       const wait = err instanceof DiscordError ? err.retryAfterMs : null;
-      if (wait !== null) this.notBefore = Date.now() + wait;
+      if (wait !== null) {
+        this.refused += 1;
+        this.notBefore = Date.now() + wait;
+      }
       // A skipped frame is harmless: the next one or `finish` carries the latest text.
       else console.log(`live reply: update skipped: ${err}`);
     }
+  }
+
+  /** Spread the bucket's remaining requests evenly until it resets. */
+  private spacing(): number {
+    const rate = this.discord.rateLimit(this.token);
+    if (!rate) return FALLBACK_FRAME_MS;
+    // One request stays in hand so the final edit is not the one Discord refuses.
+    const usable = rate.remaining - 1;
+    return usable > 0 ? Math.max(MIN_FRAME_MS, rate.resetAfterMs / usable) : rate.resetAfterMs;
   }
 
   private async write(i: number, content: string, components?: unknown[]): Promise<void> {
