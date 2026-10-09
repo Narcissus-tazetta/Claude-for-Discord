@@ -208,7 +208,8 @@ export class PaidCalls {
         reasoningTokens: result.reasoningTokens,
         finishReason: result.finishReason,
         estimatedUsd: spent,
-        gatewayCost: result.cost !== null,
+        provider: result.provider,
+        gatewayCost: result.provider === "gateway" && result.cost !== null,
         toolCalls: result.toolCalls,
       }),
     );
