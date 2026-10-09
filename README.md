@@ -55,7 +55,7 @@ Cloudflare Workers + Durable Objects SQLite上で動作します。DiscordのUse
 
 モデル一覧が1ページの場合はページ移動ボタンを出さず、無効なボタンを含めてもcustom_idが重複しない構成にします。設定更新が失敗した場合は元の操作画面を維持し、別の非公開メッセージで通知します。
 
-この少数の問題は基本動作の確認であり、任意の質問で最良の回答を保証するベンチマークではありません。問題は [src/model-evaluation.ts](src/model-evaluation.ts)、振り分けは [src/routing.ts](src/routing.ts) で調整できます。
+この少数の問題は基本動作の確認であり、任意の質問で最良の回答を保証するベンチマークではありません。問題は [src/models/evaluation.ts](src/models/evaluation.ts)、振り分けは [src/ai/routing.ts](src/ai/routing.ts) で調整できます。
 
 404/408/429/5xx・タイムアウトでは、Autoのみ別の合格モデルを最大1回試します。可能なら別会社へ切り替えます。課金済みか不明な失敗は予約額を台帳に残したまま、同じ1回答の上限額の範囲で再試行します。認証・残高不足、原因不明の通信障害は再送しません。3回続けて失敗したモデルは24時間Autoから外し、他の評価済みモデルへ戻ります。以前のモデルもGatewayで利用可能な限り手動で選べます。
 
@@ -117,9 +117,7 @@ bun run dev
 
 `.dev.vars`に `DISCORD_BOT_TOKEN`、`AI_GATEWAY_API_KEY`、`ALLOWED_USER_IDS` を設定します。このファイルはGit対象外です。APIキー未設定でも起動でき、質問時に設定が必要と表示します。キー設定後に評価を動かすと、ローカルでもGatewayへの呼び出しは課金されます。
 
-### 後日、本番へ反映する場合
-
-実装だけを確認している段階では、以下の操作は不要です。
+### 本番環境
 
 ```sh
 bunx wrangler secret put DISCORD_BOT_TOKEN
@@ -131,12 +129,12 @@ bun run deploy
 DiscordのInteractions Endpoint URLをWorkerのURLへ設定します。新しい `/ai` とAI用コンテキストメニューを追加するときだけ、以下を実行します。登録はグローバルコマンド一覧を置き換えるので、他のコマンドを併用している場合は定義を確認してください。
 
 ```sh
-cp .env.example .env
-# .envのDISCORD_BOT_TOKENを設定（既存DISCORD_TOKENも利用可）
 bun run register
 ```
 
-旧Anthropic APIキーは新しい回答処理には使用しません。個人設定・再生成記録を保持するため、Durable Objectのクラス名と既存SQLテーブルは維持しています。
+トークンは `.dev.vars` の `DISCORD_BOT_TOKEN` から読みます。
+
+個人設定・再生成記録を保持するため、Durable Objectのクラス名と既存SQLテーブルの名前は変更しないでください。
 
 ## 検証
 
@@ -144,18 +142,21 @@ bun run register
 bun run verify
 ```
 
-lint、Workersランタイム型（`worker-configuration.d.ts`）が `compatibility_date` と一致するかの確認、型チェック、Bunテストを実行します。`compatibility_date` を変えたら `bun run types` で型を再生成してください。テストではSQLiteとモックAPIを使い、実際のGateway/Discordには接続しません。モデル採用、予算予約、費用表示、エラー時の再送制御、会話・再生成・分割後の非公開設定を確認します。
+lint、Workersランタイム型（`worker-configuration.d.ts`）が `compatibility_date` と一致するかの確認、型チェック（src・scripts・tests）、未使用コードの検出（knip）、Bunテストを実行します。CIでもpushとPRごとに同じ内容を実行します。`compatibility_date` を変えたら `bun run types` で型を再生成してください。テストではSQLiteとモックAPIを使い、実際のGateway/Discordには接続しません。
+
+`bun install` でGitフックが入ります。コミット前に変更ファイルの整形とテスト、コミットメッセージの形式（`<type>: <絵文字> <説明>`）を確認します。
 
 実際の回答品質とGatewayとの実接続は、APIキーを設定した環境で別途確認してください。リクエスト本文・添付URL・APIキーを利用ログへ出力せず、モデル・トークン数（思考分を含む）・終了理由・概算費用・振り分け結果だけを記録します。
 
-## ソース
+## ディレクトリ構成
 
-- [src/gateway.ts](src/gateway.ts): HTTP API、添付/思考の変換、確定料金の照会
-- [src/model-registry.ts](src/model-registry.ts): モデル一覧、評価状態、価格帯
-- [src/model-evaluation.ts](src/model-evaluation.ts): Auto小規模な基本動作テスト
-- [src/routing.ts](src/routing.ts): 質問分類、費用と機能による候補選択
-- [src/ai.ts](src/ai.ts): 分類・回答・再試行と費用表示
-- [src/budget.ts](src/budget.ts): 同時呼び出しを含む予算台帳
-- [src/state-do.ts](src/state-do.ts): 設定、モデル更新、予算、再生成記録の永続化
-- [src/job-do.ts](src/job-do.ts): キュー、Discordへの送信、確定費用の書き足し
-- [src/live-reply.ts](src/live-reply.ts): 状況表示と回答の逐次表示、回答ボタン
+- `src/index.ts`: Workerの入口。署名検証とInteractionの振り分け
+- `src/discord/`: Discord側の処理。コマンド定義、Interaction処理、REST API、署名検証、返信履歴、回答の逐次表示とボタン
+- `src/settings/`: `/settings` の画面と、Durable Objectを待たない受付
+- `src/ai/`: 回答の生成。Gateway通信、質問分類と候補選択、予算台帳
+- `src/models/`: モデル一覧と評価状態、基本動作テスト、公開ベンチマークの採用表
+- `src/durable-objects/`: `JobDO`（質問ごとの処理と確定費用の書き足し）と `StateDO`（設定・モデル・予算・再生成記録の永続化）
+- `src/shared/`: 定数、型、通貨表示
+- `scripts/`: コマンド登録、モデル評価資料の生成
+- `tests/`: 主題ごとのテスト。共通の偽データは `tests/helpers/`
+- `docs/`: モデル評価資料とその出典

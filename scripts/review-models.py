@@ -188,7 +188,7 @@ def build(cache):
  if any(not byid[i]['adopted'] for i in old):raise ValueError('historical admission needs review')
  order=[byid[i] for i in old]+sorted((r for r in rows if r['adopted'] and r['id'] not in old),key=lambda r:r['id'])
  reviews=[{k:r[k] for k in ['id','released','scores','source']}|{'official':CATALOG} for r in order]
- (ROOT/'src/expanded-benchmark-reviews.ts').write_text('import type { BenchmarkReview } from "./benchmark-reviews";\n\n// All catalog entries reviewed; exact source conditions live in docs/model-review-2026-10-08.json.\nexport const REVIEWED_BENCHMARK_SNAPSHOT: BenchmarkReview[] = '+json.dumps(reviews,ensure_ascii=False,indent=2)+';\n')
+ (ROOT/'src/models/benchmark-snapshot.ts').write_text('import type { BenchmarkReview } from "./benchmark-reviews";\n\n// All catalog entries reviewed; exact source conditions live in docs/model-review-2026-10-08.json.\nexport const REVIEWED_BENCHMARK_SNAPSHOT: BenchmarkReview[] = '+json.dumps(reviews,ensure_ascii=False,indent=2)+';\n')
  report(rows,research,cov);print(json.dumps(cov,ensure_ascii=False))
 
 def report(rows,research,cov):
@@ -244,7 +244,7 @@ def verify(cache):
  errors={s:v['error'] for s,v in research['benchmarks'].items() if 'error' in v}
  doc=json.loads((ROOT/'docs/model-review-2026-10-08.json').read_text());rebuilt=[assess(m,research) for m in research['catalog']['data']];ids=[r['id'] for r in doc['models']]
  report_ids=re.findall(r'^### ([^\n]+)$',(ROOT/'docs/model-review-2026-10-08.md').read_text(),re.M)
- exported_ids=re.findall(r'id: "([^"\n]+)"',(ROOT/'src/expanded-benchmark-reviews.ts').read_text())
+ exported_ids=re.findall(r'id: "([^"\n]+)"',(ROOT/'src/models/benchmark-snapshot.ts').read_text())
  checks={'reportCoversAllIds':set(report_ids)==set(b) and len(report_ids)==len(b),
  'exportedAdoptionsMatch':set(exported_ids)=={r['id'] for r in rebuilt if r['adopted']} and len(exported_ids)==sum(r['adopted'] for r in rebuilt),'twoFreshPasses':True,'catalogAndMeasurementsUnchanged':not any(diffs.values()),'allSourcesParsed':not errors,
  'allIdsExactlyOnce':len(ids)==len(set(ids))==len(b) and set(ids)==set(b),'rebuildMatches':doc['models']==rebuilt,
