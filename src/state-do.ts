@@ -3,7 +3,7 @@ import { PaidCalls } from "./ai";
 import { benchmarkReview } from "./benchmark-reviews";
 import { BudgetError, type BudgetKind, BudgetLedger, positiveSetting } from "./budget";
 import { EFFORT_LEVELS, type Env, MAX_REGEN_RECORDS } from "./constants";
-import { GatewayClient, GatewayError, reasoningOptions } from "./gateway";
+import { GatewayClient, GatewayError, type GatewayResult, reasoningOptions } from "./gateway";
 import { EVALUATION_MAX_OUTPUT, evaluateModel } from "./model-evaluation";
 import {
   autoFamily,
@@ -11,6 +11,8 @@ import {
   DISCOVERY_VERSION,
   EMPTY_REGISTRY,
   evaluationCandidates,
+  FREE_RETRY_MS,
+  FREE_SUITE_VERSION,
   freshEvaluation,
   freshOutcome,
   isApproved,
@@ -19,15 +21,19 @@ import {
   parseCatalog,
   type Registry,
   revision,
+  type Tier,
 } from "./model-registry";
 import type { Prefs, RegenRecordWire } from "./types";
 
 // Gateway ingests usage asynchronously; a record still missing after this long never arrives.
 const PENDING_COST_GIVE_UP_MS = DAY_MS;
+const FREE_EVALUATION_DAY = `ai_free_evaluation_day_v${FREE_SUITE_VERSION}`;
+const FREE_DAILY_LIMIT = 24;
+const FREE_RETRIES = `ai_free_retry_v${FREE_SUITE_VERSION}`;
 
 function evaluationIds(ids: string[], registry: Registry): string[] {
   return ids.filter(
-    (id) => autoFamily(id) || registry.models.some((m) => m.id === id && isFreeModel(m)),
+    (id) => autoFamily(id) && !registry.models.some((m) => m.id === id && isFreeModel(m)),
   );
 }
 
@@ -153,6 +159,9 @@ export class StateDO extends DurableObject<Env> {
     }
     const day = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const daily = await this.ctx.storage.get<{ day: string; ids: string[] }>("ai_evaluation_day");
+    const freeDaily = await this.ctx.storage.get<{ day: string; ids: string[] }>(
+      FREE_EVALUATION_DAY,
+    );
     const lastFailure =
       await this.ctx.storage.get<NonNullable<Registry["progress"]>["lastFailure"]>(
         "ai_evaluation_error",
@@ -162,6 +171,8 @@ export class StateDO extends DurableObject<Env> {
       progress: {
         attemptsToday: daily?.day === day ? evaluationIds(daily.ids, registry).length : 0,
         dailyLimit: 2,
+        freeAttemptsToday: freeDaily?.day === day ? freeDaily.ids.length : 0,
+        freeDailyLimit: FREE_DAILY_LIMIT,
         budgetUsd: positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5),
         nextRunAt: await this.ctx.storage.getAlarm(),
         ...(lastFailure ? { lastFailure } : {}),
@@ -211,7 +222,7 @@ export class StateDO extends DurableObject<Env> {
   }
 
   /** First Auto request bootstraps one model. Existing preferences are not overwritten. */
-  async prepareRegistry(auto = true, freeOnly = false): Promise<string> {
+  async prepareRegistry(auto = true, freeOnly = false, tier: Tier = "economy"): Promise<string> {
     try {
       await this.refreshRegistry();
     } catch (error) {
@@ -220,15 +231,25 @@ export class StateDO extends DurableObject<Env> {
         error instanceof GatewayError ? error.status : "transport",
       );
     }
-    const registry = await this.registry();
-    if (
-      auto &&
-      !registry.models.some(
-        (model) => (!freeOnly || isFreeModel(model)) && isApproved(registry, model),
-      ) &&
-      Date.now() - registry.refreshedAt < 2 * DAY_MS
-    )
-      await this.maintainModels(freeOnly);
+    let registry = await this.registry();
+    const ready = () =>
+      registry.models.some((model) => {
+        if ((freeOnly && !isFreeModel(model)) || !isApproved(registry, model)) return false;
+        if (!freeOnly || tier === "economy") return true;
+        const evaluation = freshEvaluation(registry, model);
+        return tier === "strong" ? evaluation?.complex : evaluation?.balanced;
+      });
+    if (auto && !ready() && Date.now() - registry.refreshedAt < 2 * DAY_MS)
+      for (
+        let attempt = 0;
+        attempt <
+          (freeOnly ? Math.min(FREE_DAILY_LIMIT, registry.models.filter(isFreeModel).length) : 1) &&
+        !ready();
+        attempt++
+      ) {
+        await this.maintainModels(freeOnly);
+        registry = await this.registry();
+      }
     await this.ensureAlarm();
     return await this.getRegistryJson();
   }
@@ -255,10 +276,17 @@ export class StateDO extends DurableObject<Env> {
     const daily = await this.ctx.storage.get<{ day: string; ids: string[] }>("ai_evaluation_day");
     const registry = await this.registry();
     const ids = daily?.day === day ? evaluationIds(daily.ids, registry) : [];
-    if (ids.length >= 2) return;
+    const freeDaily = await this.ctx.storage.get<{ day: string; ids: string[] }>(
+      FREE_EVALUATION_DAY,
+    );
+    const freeIds = freeDaily?.day === day ? freeDaily.ids : [];
+    const retries = (await this.ctx.storage.get<Record<string, number>>(FREE_RETRIES)) ?? {};
     const paidEvaluation = positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5) > 0;
-    const candidates = evaluationCandidates(registry).filter(
-      (model) => !ids.includes(model.id) && ((!freeOnly && paidEvaluation) || isFreeModel(model)),
+    const candidates = evaluationCandidates(registry).filter((model) =>
+      isFreeModel(model)
+        ? freeIds.length < FREE_DAILY_LIMIT &&
+          Date.now() - (retries[model.id] ?? 0) >= FREE_RETRY_MS
+        : !freeOnly && paidEvaluation && ids.length < 2 && !ids.includes(model.id),
     );
     // Bootstrap inexpensive models first and spread evaluation across all three creators.
     candidates.sort((a, b) => {
@@ -276,28 +304,77 @@ export class StateDO extends DurableObject<Env> {
     const model = candidates[0];
     if (!model) return;
     // Claim before any paid work so alarm retries/crashes cannot repeat the same suite today.
-    await this.ctx.storage.put("ai_evaluation_day", { day, ids: [...ids, model.id] });
+    await this.ctx.storage.put(isFreeModel(model) ? FREE_EVALUATION_DAY : "ai_evaluation_day", {
+      day,
+      ids: [...(isFreeModel(model) ? freeIds : ids), model.id],
+    });
+    if (isFreeModel(model)) {
+      retries[model.id] = Date.now();
+      await this.ctx.storage.put(FREE_RETRIES, retries);
+    }
     const calls = new PaidCalls(this.env, this, "evaluation", 0.15);
+    const checkpointKey = `ai_free_probes:${model.id}`;
+    const saved = isFreeModel(model)
+      ? await this.ctx.storage.get<{
+          revision: string;
+          at: number;
+          results: Record<string, GatewayResult>;
+        }>(checkpointKey)
+      : undefined;
+    const checkpoint =
+      saved?.revision === revision(model) && Date.now() - saved.at < DAY_MS
+        ? saved
+        : {
+            revision: revision(model),
+            at: Date.now(),
+            results: {} as Record<string, GatewayResult>,
+          };
     try {
-      const evaluation = await evaluateModel(model, (candidate, messages) => {
-        const minimum =
-          candidate.reasoning.find((option) => option.type === "budget_tokens")?.min ?? 0;
-        const mandatoryBudget =
-          minimum > 0 &&
-          !candidate.reasoning.some(
-            (option) => option.type === "toggle" || option.type === "effort",
+      const evaluation = await evaluateModel(
+        model,
+        async (candidate, messages) => {
+          const minimum =
+            candidate.reasoning.find((option) => option.type === "budget_tokens")?.min ?? 0;
+          const mandatoryBudget =
+            minimum > 0 &&
+            !candidate.reasoning.some(
+              (option) => option.type === "toggle" || option.type === "effort",
+            );
+          const cap = Math.min(
+            candidate.maxOutput,
+            isFreeModel(candidate)
+              ? Math.max(EVALUATION_MAX_OUTPUT + 4096, minimum + 256)
+              : mandatoryBudget
+                ? Math.max(EVALUATION_MAX_OUTPUT, minimum + 256)
+                : EVALUATION_MAX_OUTPUT,
           );
-        const cap = Math.min(
-          candidate.maxOutput,
-          mandatoryBudget ? Math.max(EVALUATION_MAX_OUTPUT, minimum + 256) : EVALUATION_MAX_OUTPUT,
-        );
-        return calls.complete(
-          candidate,
-          messages,
-          cap,
-          reasoningOptions(candidate, { thinking: true, effort: "low" }, cap),
-        );
-      });
+          const complete = () =>
+            calls.complete(
+              candidate,
+              messages,
+              cap,
+              reasoningOptions(candidate, { thinking: true, effort: "low" }, cap),
+            );
+          try {
+            return await complete();
+          } catch (error) {
+            // A transient failure should not discard a free suite's completed probes.
+            if (isFreeModel(candidate) && error instanceof GatewayError && error.canFallback)
+              return await complete();
+            throw error;
+          }
+        },
+        Date.now(),
+        isFreeModel(model)
+          ? {
+              get: async (name) => checkpoint.results[name],
+              save: async (name, result) => {
+                checkpoint.results[name] = result;
+                await this.ctx.storage.put(checkpointKey, checkpoint);
+              },
+            }
+          : undefined,
+      );
       await this.ctx.blockConcurrencyWhile(async () => {
         const latest = await this.registry();
         if (latest.models.some((m) => m.id === model.id && revision(m) === evaluation.revision)) {
@@ -342,6 +419,15 @@ export class StateDO extends DurableObject<Env> {
             ? "budget"
             : "transport",
       );
+    } finally {
+      if (isFreeModel(model)) {
+        const due = await this.ctx.storage.get<number>("ai_maintenance_due");
+        await this.ctx.storage.put(
+          "ai_maintenance_due",
+          Math.min(due ?? Infinity, Date.now() + FREE_RETRY_MS),
+        );
+        await this.scheduleNextAlarm();
+      }
     }
   }
 
@@ -435,14 +521,18 @@ export class StateDO extends DurableObject<Env> {
       const daily = await this.ctx.storage.get<{ day: string; ids: string[] }>("ai_evaluation_day");
       const day = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const registry = await this.registry();
-      const more =
-        daily?.day === day &&
-        evaluationIds(daily.ids, registry).length < 2 &&
-        evaluationCandidates(registry).some(
-          (model) =>
-            !daily.ids.includes(model.id) &&
-            (isFreeModel(model) || positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5) > 0),
-        );
+      const freeDaily = await this.ctx.storage.get<{ day: string; ids: string[] }>(
+        FREE_EVALUATION_DAY,
+      );
+      const freeIds = freeDaily?.day === day ? freeDaily.ids : [];
+      const paidIds = daily?.day === day ? evaluationIds(daily.ids, registry) : [];
+      const more = evaluationCandidates(registry).some((model) =>
+        isFreeModel(model)
+          ? freeIds.length < FREE_DAILY_LIMIT
+          : paidIds.length < 2 &&
+            !paidIds.includes(model.id) &&
+            positiveSetting(this.env.AI_EVALUATION_BUDGET_USD, 0.5) > 0,
+      );
       await this.ctx.storage.put(
         "ai_maintenance_due",
         Date.now() + (more ? 5 * 60 * 1000 : DAY_MS),
@@ -456,7 +546,7 @@ export class StateDO extends DurableObject<Env> {
       sql.exec(`
         CREATE TABLE IF NOT EXISTS prefs (
           user_id     TEXT PRIMARY KEY,
-          ephemeral   INTEGER NOT NULL DEFAULT 1,
+          ephemeral   INTEGER NOT NULL DEFAULT 0,
           model       TEXT    NOT NULL,
           thinking    INTEGER NOT NULL DEFAULT 1,
           effort      TEXT    NOT NULL DEFAULT 'high',
@@ -492,9 +582,9 @@ export class StateDO extends DurableObject<Env> {
   }
 
   private defaults(): Prefs {
-    // Mirrors get_model_prefs() plus the separate display-mode default (ephemeral = true).
+    // New users' answers are public; saved display preferences remain authoritative.
     return {
-      ephemeral: true,
+      ephemeral: false,
       model: this.env.AI_DEFAULT_MODEL || "auto",
       thinking: true,
       effort: "medium",

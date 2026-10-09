@@ -53,6 +53,8 @@ export interface Registry {
   progress?: {
     attemptsToday: number;
     dailyLimit: number;
+    freeAttemptsToday?: number;
+    freeDailyLimit?: number;
     budgetUsd: number;
     nextRunAt: number | null;
     lastFailure?: { model: string; reason: string; at: number };
@@ -63,6 +65,8 @@ export type Tier = "economy" | "balanced" | "strong";
 export const EMPTY_REGISTRY: Registry = { refreshedAt: 0, models: [], evaluations: {} };
 export const DAY_MS = 86_400_000;
 export const SUITE_VERSION = "1";
+export const FREE_SUITE_VERSION = "2";
+export const FREE_RETRY_MS = 5 * 60 * 1000;
 export const DISCOVERY_VERSION = 4;
 /** A free base price alone is insufficient if long-context tiers become paid. */
 export function isFreeModel(model: ModelInfo): boolean {
@@ -186,7 +190,7 @@ export function parseCatalog(payload: unknown): ModelInfo[] {
 
 export function revision(model: ModelInfo): string {
   // A price/capability change requires re-evaluation before automatic use.
-  return JSON.stringify([SUITE_VERSION, model]);
+  return JSON.stringify([isFreeModel(model) ? FREE_SUITE_VERSION : SUITE_VERSION, model]);
 }
 
 export function freshEvaluation(registry: Registry, model: ModelInfo): ModelEvaluation | undefined {
@@ -211,9 +215,9 @@ export function freshOutcome(registry: Registry, model: ModelInfo) {
  * chat answerers; neither is worth Auto evaluation budget. (Base models also carry a `fast`
  * tag meaning "has a fast variant", so the id suffix is what identifies the variant.)
  */
-function autoCandidate(model: ModelInfo): boolean {
+function autoCandidate(model: ModelInfo, now = Date.now()): boolean {
   return (
-    (autoFamily(model.id) || isFreeModel(model)) &&
+    (autoFamily(model.id) || isFreeModel(model) || Boolean(benchmarkReview(model, now))) &&
     !/(?:^|[-/])(safeguard|moderation)(?:[-/]|$)/i.test(model.id) &&
     !model.preview &&
     !/-fast$/.test(model.id) &&
@@ -226,7 +230,7 @@ export function isApproved(registry: Registry, model: ModelInfo, now = Date.now(
   const evaluation = freshEvaluation(registry, model);
   const outcome = freshOutcome(registry, model);
   return Boolean(
-    autoCandidate(model) &&
+    autoCandidate(model, now) &&
       (benchmarkReview(model, now) || evaluation?.basic) &&
       (!evaluation || (evaluation.basic && evaluation.disabledUntil <= now)) &&
       (!outcome || outcome.disabledUntil <= now),
@@ -234,25 +238,29 @@ export function isApproved(registry: Registry, model: ModelInfo, now = Date.now(
 }
 
 /** Evaluate the newest two stable models in each creator/cost band, not the entire catalog. */
-export function autoEvaluationPool(registry: Registry): ModelInfo[] {
+export function autoEvaluationPool(registry: Registry, now = Date.now()): ModelInfo[] {
   const bands = new Map<string, number>();
   return [...registry.models]
     .sort((a, b) => b.released - a.released || a.id.localeCompare(b.id))
     .filter((model) => {
       const tier = modelTier(model);
-      if (!autoCandidate(model) || !tier) return false;
+      if (!autoCandidate(model, now) || !tier) return false;
       const key = `${model.id.split("/")[0]}:${isFreeModel(model) ? "free" : tier}`;
       const count = bands.get(key) ?? 0;
       bands.set(key, count + 1);
-      return count < 2;
+      return count < 2 || Boolean(benchmarkReview(model, now));
     });
 }
 
 export function evaluationCandidates(registry: Registry, now = Date.now()): ModelInfo[] {
-  return autoEvaluationPool(registry).filter((model) => {
+  return autoEvaluationPool(registry, now).filter((model) => {
     if (benchmarkReview(model, now)) return false;
     const evaluation = freshEvaluation(registry, model);
-    return !evaluation || (!evaluation.basic && now - evaluation.testedAt >= 7 * DAY_MS);
+    return (
+      !evaluation ||
+      (!evaluation.basic &&
+        now - evaluation.testedAt >= (isFreeModel(model) ? FREE_RETRY_MS : 7 * DAY_MS))
+    );
   });
 }
 

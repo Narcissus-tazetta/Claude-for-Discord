@@ -1,0 +1,664 @@
+{
+  "fetchedAt": "2026-10-07T22:55:46.645908+00:00",
+  "catalogSha256": "50a589ed0fc084fe4ec52251e11cd960101569e72ca7ff83a4f7ebf998e9ece6",
+  "indexSha256": "d2885f8c505dbaac8b31da8d3a6c7a1cb547e6bf8df044dba38a3fef01d737bd",
+  "releaseCount": 504,
+  "sources": [
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-3-haiku",
+      "sha256": "e626a56585dceceb37141084a8363e792360f20d6e353046317561a16c9f996e"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-4-5-haiku",
+      "sha256": "7fed3ac7b2523f338ec2abb9a8b48eddb37c2d5066a2715bce59087350ef553b"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-4-5-sonnet",
+      "sha256": "0068842c5ba27204dfdd80285c51db3f4b797aff6322778fab4e35724fad58cb"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-4-opus",
+      "sha256": "4a9720692d0b98435f824e3cf76553edc3e23003b9f4b99d9415ad106d0c858a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-4-sonnet",
+      "sha256": "60aa3424f4c867f08832f5877f07ff28e41d21507ccca1ee18677de66ef4545a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-fable-5",
+      "sha256": "724f4a7c657b04d924dd3b903949f168f89b76eda25d5db774538fade874ec21"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-fable-5-1",
+      "sha256": "e5950ed26f3c56886355ef6b76a7348aa2a153ea720261a90cff88ab4639accc"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-haiku-5-5",
+      "sha256": "3d5550ab459c9e17627efc4981d527556a6a4fc70936e2c3952ebb47bf86f777"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-opus-4-5",
+      "sha256": "351c3719e0422c4e279aa38665eab697e03db66fa75cabed7575034b65869915"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-opus-4-6",
+      "sha256": "076e87b155fe7e2e1e5463e8298a4bfbae898009a15a1870632d2e43f05b9f8a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-opus-4-7",
+      "sha256": "32ed086ba07cd636288a75269e2611dc9ec0f4e153ab1c746acd8e318c214f4e"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-opus-4-8",
+      "sha256": "c46735e616f2f886fc5727b0ebd023fbbd0ea07268f42a6ee5902b4214ad8c20"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-opus-5",
+      "sha256": "9ac6cfbaebb36aeb751a93f0d3712de24c826265178a87638eddab303be11d41"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-opus-5-5",
+      "sha256": "06d6e86ec9b1f6003487ff680d5ceea08586cdbe2518a6a2bb752ca812ff6ac7"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-sonnet-4-6",
+      "sha256": "6fb270359c7deb683ba664b4c25380ae6678419ebb1ccbbb328ce99635256799"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-sonnet-5",
+      "sha256": "9658fb1bcc3293dad1ef40b7261efd0dcd6b1423031f7ed14f94202c9a6d5e10"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/claude-sonnet-5-5",
+      "sha256": "a969d34ea981905eb3a9a229fd19f7b5a0a640ab184bea569a0a6f33ce1608a8"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/command-a",
+      "sha256": "b92b4bac41fde51339ed7f5435324507a6f86fdbcf389f19e924a7e0dfe90c09"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/deepseek-r1",
+      "sha256": "9dbe849ab4069b49bf8d5249b5f76dba59c26af4255ac8b46493f921898d1390"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/deepseek-v3-1",
+      "sha256": "4c1ef398bfac1e1e687267751f97a48ac1be3aec82916627b31a8996f78141e0"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/deepseek-v3-2",
+      "sha256": "59ba691c3adb82be00135e9e5992106de31f6d94d5f05e5eab3e02df9ce0d3f5"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/deepseek-v4-1-flash",
+      "sha256": "d2b2443561194e7a15a1614f9d00c62c8657000c160798bb62f20506cd431cc3"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/deepseek-v4-flash",
+      "sha256": "ffbff308f248d6230ed875f370d961661566ae6c35f9ff59f369ed402c9b74d7"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/deepseek-v4-pro",
+      "sha256": "3e3f69398f9ef09fe20ab89abdb62e6fb0fb2a79aecdd4cdfdb7ec90d484435b"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-2-5-flash",
+      "sha256": "58a83f71c2ef42ffed22fb77d29434fcc44db9b2752a7d4f2c71dd515f579eee"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-2-5-flash-lite",
+      "sha256": "202bdc1a3c2cf9939152873fcf46efdf3f393d4a780ee44c0901b5f40f1350e1"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-2-5-pro",
+      "sha256": "cbe206a034da6fb79fbf8c389bbc3cb68a29376b85c687d18cbab7e55b6462f9"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-3-1-flash-lite",
+      "sha256": "7a068d811fc9dbaaba05c65678fbbff0e93d3f8e5ccfbb3d9b9e63c0db2a4565"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-3-1-pro-preview",
+      "sha256": "1928229dac495c3d110e726ec58f486df84a2983c2e6334ee8341f1adb1b767f"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-3-5-flash",
+      "sha256": "528b88a77fdc677f826526730461659f5edd06c090ee42982fabc309ca81fd5f"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-3-5-flash-lite",
+      "sha256": "56c8d197d4b84001816727cc469b7243e10d71c1d39d5094503a8ceac1132d1f"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-3-6-flash",
+      "sha256": "568e807071fef8178570889dc676c28092208a001733afc3d2b9d924bf71c600"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-3-7-flash",
+      "sha256": "c3044ab40ab4a4d852d901b5f883a179d3595a7e68ce28513b47bf3aa76ffbe6"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-3-8-flash",
+      "sha256": "84dad5722a7f98f106d6a9282a35429fc4f0e3c6d1aaa1d4118c6f532d52b36d"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemini-3-flash-preview",
+      "sha256": "0109c08933fddccba568654996130a1c1f352da219fd86f2b45290d4c29d65ce"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemma-4-26b-a4b",
+      "sha256": "4178c05549373c24ed34cb6cce6064e3c0c7371c567c0cd33402a5e99d7ab212"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gemma-4-31b",
+      "sha256": "1c4ef204176af4ed9641ccb6a1b9e9b2a60262a967237cd136e5c3b2ad58064d"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-4-5",
+      "sha256": "6b8bd01d5f135ed4b45656ff779a41d15b1899e6c60eaebb533f1b1061976efb"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-4-5-air",
+      "sha256": "9f8b6babc82c7df45b731171227def0524205b00e4cef7cf5a40d4fdab73b397"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-4-5v",
+      "sha256": "5ab964ea3313c62ba60a436a868635e1e5b16d7588cc88db2953d4a8c87a95d8"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-4-6",
+      "sha256": "50671b36acc879724be47cd1472870d0b5f07939b7c023bd72df04af0280f5d2"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-4-7",
+      "sha256": "ee86958fe558ccef30b30473578e95bd86b3ae4f43f75d6a7c0a1d7cce29fa0c"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-4-7-flash",
+      "sha256": "2937d06d80433818d5d2c46dd6debe26f9a2d892903423eb00b3b8e95721158c"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-5",
+      "sha256": "f8c369f346302b2ddd396de3097bdf29b34859e79d30ec37a2ea5cc0058a938f"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-5-1",
+      "sha256": "54b40f1bf7ef99af47006d9e58ca13d8ba067613f837fecfdbbd69963b8c79e3"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-5-2",
+      "sha256": "70c71fdd141b5289201d2073a9b4d6dc4ee93975cb53ffb692a2860707800109"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-5-3",
+      "sha256": "2f27de3662b0c4e11bc09bd2898c1b91912ecf8b18800b6ad71c1416d1401227"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-5-3-flash",
+      "sha256": "b768a93870ed95ae1775bbb26e88c524d203bbcff4266b4df1c9736767a1a2a7"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-5-turbo",
+      "sha256": "ee05010046321e4ab65d33cfaa38a6d3d3f0f2f6dd1e8c0679530c251d88ff17"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/glm-5v-turbo",
+      "sha256": "1e11a89c1333398b7793014319a30c7d2e81b67a6f985b59bbc004dd90d7423c"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-3-5-turbo",
+      "sha256": "87cba94398f1285b07988e86289e6f7db769ab581c6b053db33636264eed628b"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-4-1",
+      "sha256": "194f9a7666ec49b99681d8033455fd500823074438e74e8f286f12985ad1a210"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-4-1-mini",
+      "sha256": "88ff811dd729505732c18fe991d6f84d12357c70fad9d2bc48d80b7bb9c4de6e"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-4-1-nano",
+      "sha256": "5828456134f6658a5c89aa9a42b66ae1e6e8a8532df059512fc79f8b8ee22508"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-4-turbo",
+      "sha256": "d79031a59e7af25aff4f853bb262120c2ce6bd3cf4eb258bd19a56c5434bb58d"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-4o",
+      "sha256": "e9b49266377040606ca2425ebca79f1c39eb41614106cf54e4dec3b0f2f32b7a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-4o-mini",
+      "sha256": "c8e9672b4d4e22c606331718c741a3ef28054420ca74d0f8032ffe5f5619cc69"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5",
+      "sha256": "740e048a53cad4fb65febd9f35db4dc7dd53b6d07bb118c2cffc760cc8c6f385"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-1",
+      "sha256": "0b61c1e1c312b1eaa630999b412b3232a6b3cd8105445b0c4b243f05fc89c40a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-1-codex",
+      "sha256": "d90a84e974b9fbd3a5a95788142c49c7bdcab5e65b46795db631884e4ceeb6e4"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-1-codex-mini",
+      "sha256": "560d0e02b14361e483950f9abe7a6851532de2d6ce1bb9464e34c5138d90a7d8"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-2",
+      "sha256": "4d324c2f38eff8d3d8ec9ed266f8f001960b2da07ccf75294c4d8f061b6075a8"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-2-codex",
+      "sha256": "ddb4b11e0ec005a37a57f575b118c12b27d2bb755af7ad1ab4c45e11a92c4031"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-3-codex",
+      "sha256": "f7bf905e6fb6b60dbbb75828933d034ca0504bbe4186acc9c03bec9cbfe55189"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-4",
+      "sha256": "f8b9ddee540a83fc159e00ba9aa9884808e33ac0ae4f3c04df79e1233658066a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-4-mini",
+      "sha256": "8320412de599bca6df1aa942828a1af7768eecdbd0dacddaae6531aeeee81644"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-4-nano",
+      "sha256": "97223e0d36816aba8e8870c65465539a49fbafb27e97a99c8a2b125a650dbe05"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-4-pro",
+      "sha256": "f806acfcfa3a1592f06e44d5a60c0634947c8c14372772902f363b4407cb715c"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-5",
+      "sha256": "8dbc6097afece15970ff090a6b39e4063d785b38a71329119e7efd35a85bfd33"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-5-pro",
+      "sha256": "3ca0c537feec9f9063ca203603c27492054accf053f8b2adfc87b53740dee7d1"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-6-luna",
+      "sha256": "c580e56fd6041546768e3cbd49cdc8267229bc419469d706c4f60613a16e0009"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-6-sol",
+      "sha256": "4f4e20fd25124732d982772c31c4ac71d68b5951c3d4edcb484ba8447a1bc6ff"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-6-terra",
+      "sha256": "864304ce48e4e44899f1f9647ddfa827e890d15aa4e5a33aa02b8953349381b3"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-codex",
+      "sha256": "ddf11413b6a8fb8ef0a8dd594e8b357385a9b4962b86b2c5a15079c1bdc41441"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-mini",
+      "sha256": "fb96731336072ea24e5f792a02c6a27256ba4e869121d02a12558775c5829e99"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-5-nano",
+      "sha256": "d69b303b7adbaaaf137125e17661251a528761e723e9fe53afa3d322e784bfb3"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-6-1-sol",
+      "sha256": "031fca095cc0447ebbd1f9c4e6a6f12227f4322bd9cd6fd0f5ec2f4c818e4dcf"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-6-astra",
+      "sha256": "3dfb2c173f805019632c0f703d38b58137e66d95be72421f85f14df389089d97"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-6-luna",
+      "sha256": "f0e694ced1cca8d2ce254b51e85f6cac1b8ab3b85f2ee6fb05c036199aed697a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-6-sol",
+      "sha256": "15ca0aea158734eed1688b0fce064ce1eec1702c175141c8ff531b9a11036c84"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-oss-120b",
+      "sha256": "170428a210d6c884d33e8f984f134c79935c68e864b837917108eb57616ca8e0"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/gpt-oss-20b",
+      "sha256": "a0735360b41dad3c3db0e9a58ae1917f236d680b8d470cfc465af9ff87337a36"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/grok-4-1-fast",
+      "sha256": "375151f5ac500608391d341fe4d7810b80f9765aec3004948120376d1e96d558"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/grok-4-20",
+      "sha256": "8cb25bd95893ee54068c9e2b5c947baacf79ffa84ff7aacca66dc4507dc622e1"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/grok-4-3",
+      "sha256": "c575fed0631e45cfa55f9f4b39a881edb7ad4f19ec33da317f65a608c7ba4795"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/grok-4-5",
+      "sha256": "d5b4bc0f3f06812b6d4b4afe36e625480a68ee4348fadc5ddcbb39f0fd197f78"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/grok-4-6",
+      "sha256": "cdd648245e6333df5ebf84faf8267187c35780445ffe0a8ec7c0999bfaaef2a1"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/grok-4-7",
+      "sha256": "62bfd47bf821713ba5532d1a3197d34df77c1e9d2fbac05d16250aa6ea32a62d"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/hy3",
+      "sha256": "3ee1e712de0881783251eac5dde8d57d313ec1719b206ce013c269834f5c2d2e"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/inkling",
+      "sha256": "4c6c11ee8579751f5208280baa6e344908427d0cabe0fe04c752b2c16a03b06c"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/inkling-small",
+      "sha256": "462cdadc1f3f8b0b0427301b86c8094421eb51bb23c9b6ed90edfbde5820d895"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/kimi-k2",
+      "sha256": "4472ee5ee2926ea5137c0eaf9101b4c9d7a4cc90bbae4482ee541348e6067f5f"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/kimi-k2-5",
+      "sha256": "eecf6699bdca1f4518dd4960aa866d568925ecae4725f9ef5dac2a2f9789b467"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/kimi-k2-6",
+      "sha256": "008434259f9cace52d75b8b45ec5b5007cb3fa2b5f2ba8c71f6574c4c4cd3bd0"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/kimi-k2-7-code",
+      "sha256": "84398dda707dc2cad48f36fd4c75bb9230759e0415f145c21e6ce3e432c55f6c"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/kimi-k3",
+      "sha256": "dfe58e486c5a75268f34be173c24debf3240b86557d07fbe49147c0dd2629bc3"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/ling-3-0-flash",
+      "sha256": "43793d56f7438ee5c22d1463a42de2f48bb3a622c336598d2ee061cbaf0e0ee1"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/ling-3-0-flash-fin",
+      "sha256": "d6bb005d8e4c0b3f02fb17a1f698fe208f62a3146c384d35045cee8eadd31dbf"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/ling-3-0-flash-vl",
+      "sha256": "630469f5bdb786d5e6279838b5acd33a10fab8eb480350fce4034b2de828cc26"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/ling-3-1-flash",
+      "sha256": "d87a7d83d6c98fdc1f6da258f5425a549f1bf34b2ca22bb634e301235da5b763"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/llama-3-1-instruct-70b",
+      "sha256": "07e48420329c5b76f07abd1316d0e1d2165ddacd95cc4f92371690bff452ac0c"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/llama-3-1-instruct-8b",
+      "sha256": "5d9aad2c12396a4e474f9780f9502cf90babad597839dd3c09e373490885f2e3"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/llama-3-3-instruct-70b",
+      "sha256": "c849d6afdc52aebd119483b3deff16da5544d84b94577bc4e1fd429d5c645f34"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/llama-4-maverick",
+      "sha256": "20d167e1d2a40e45755e7a5acea81a2d7c790acf395c661a4c94e78a09f085cf"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/llama-4-scout",
+      "sha256": "d5a0eb1103267e037176e5e8e5d017c575bb57eba35af540f3ba53f7facb7694"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/mercury-2",
+      "sha256": "3bc53d4c43caf27780a85ce4fc7278105faf8986b8d35d20eb77973012c72825"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/mercury-2-5",
+      "sha256": "4cd9566464875f6d6598922fd2baf79ab577dd8d50ea08f48fe7961cb586dbe8"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/mimo-v2-5-pro",
+      "sha256": "6ab1732e8208ed9d034f0245ffafeb3532cff9dab0a202ae7214208c4029cdbd"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/mimo-v2-6-flash",
+      "sha256": "814ebc4a5d6ec9c3a2b80f9f63cab7297b84d1f4c8f99c83b01717acca1ba794"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/mimo-v2-6-pro",
+      "sha256": "5d31042f1b2f766c6a76a89be71e4c1bc11d68c788bd391c5a73d8c7f7a6e4c4"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/minimax-m2",
+      "sha256": "5e038b6453a29b48a51ed72cf318f780374445c6ffc9db784780283c733d6006"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/minimax-m2-1",
+      "sha256": "8b82b0efaf8f8465d4b4c54e8817bd95dc59ca60fe943052d0a7ea9828971e02"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/minimax-m2-5",
+      "sha256": "1bafd4353b5724284f8fa1035b6ebf4e6ad5b38c5ef93ca4d37f622d06c7f1b4"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/minimax-m2-7",
+      "sha256": "742d6bd7d9a714f40385828e6224e8486d434cb8e5be8d65fd5910266f2cc479"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/minimax-m3",
+      "sha256": "62a6b8b9574c374ff6729c5b0c3b9c6eb6bd2e9916e3f8adf504f2e53379179b"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/mistral-large-3",
+      "sha256": "a2bb02eef419dff286d009ac08db204d28afa6cea860f1a95a352b8d518b1ae2"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/mistral-large-4",
+      "sha256": "15a47e4f577f201afa80f0260f2fa1d2ef2c3af748cafa5cc1d71a5f53d3dde4"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/mistral-medium-3-5",
+      "sha256": "f4f3d91c692cd9965ca4eb6151cfe90782d9936525926c030dbd9c1fab2867ea"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/mistral-small",
+      "sha256": "1c04bdd4572ce991dc124c2a218654c17fc8fcb7b7c677230bcb81b098e7ae0e"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/muse-spark-1-1",
+      "sha256": "0a2d2dd4573617f343185e593f60cfbf236de1ea6d8a43517b09eb505381a0ed"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/muse-spark-1-2",
+      "sha256": "93886c93dc48c209d2b7f19cfed6fb3f387704c9ea07284c943fe566fc6b7a57"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/muse-spark-1-3",
+      "sha256": "9f522c7dc4f2554f85ae7966826451f5d6964792581479f1330874e301fa4c6b"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nemotron-3-5-lightning",
+      "sha256": "d780ec54fd6a1469a83c4eacd9782042e1a6c3e1fa9e6c9b93f519f9ed9feb6b"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nemotron-3-ultra-550b-a55b",
+      "sha256": "2ddce009d28c59ea07406ea80bdef3924c98e0441a1645841751c678d5efe316"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nova-2-0-lite",
+      "sha256": "47be211a934ef947ccc1c46ec7a5c27f8fb89dd486c512910ab4098989c08353"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nova-lite",
+      "sha256": "c04070e35122bd746ce8ccfa02b3633093194eedb8347fb781f8df4dc50e0722"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nova-micro",
+      "sha256": "206f33429b83451449f239f149743be8a806f6c47e9e6c8cfe9080fd164f8c53"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nova-pro",
+      "sha256": "cf1aacadcd908a317e367ccf49d10c1782287278c11b3a5776ba26a47c343d17"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nvidia-nemotron-3-nano-30b-a3b",
+      "sha256": "afa027502f72c1e9cac7d77b4bbce553e53e08fab320cb6b5fc961deb331ac85"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nvidia-nemotron-3-super-120b-a12b",
+      "sha256": "14fa773fc19c7ad042d5a02c79fcb0639beffd2bb48f5c5ab817ae28117df12c"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nvidia-nemotron-nano-12b-v2-vl",
+      "sha256": "901413b83e5b9430a0c28075359e4535b805ac667093a0a6c9e3892199701ebb"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/nvidia-nemotron-nano-9b-v2",
+      "sha256": "5c6694b67dce659530e06bfc99c454ef7da2051ffded5b2c1ece5a066b6c8b43"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/o1",
+      "sha256": "368fbaca9204c6071d19f2f1b421a2e8674beb275722b406dd162d1df7fc6546"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/o3",
+      "sha256": "0abe6eb84a04e14bc6533e36da9889d26b587450c740e87396e0c08ad8c07b86"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/o3-mini",
+      "sha256": "fb2facb8e8914a0a5630dfb739b1a7a6ba62c60f5eeef9835ef63a4a79374813"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/o3-pro",
+      "sha256": "175bb11ff7f3d9350638ac642626bb3e6eccfeedd79f9d90b338f35f7a85e92f"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/o4-mini",
+      "sha256": "1cdba1d9718ffd553787fd6ab4e28ecba7381337519204e5c3da45f2d8594eb9"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-14b-instruct",
+      "sha256": "e091360c0f80bd513272d7cb0346b2299a595b4ca382464db26af574d0875b16"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-235b-a22b-instruct",
+      "sha256": "a75d2001415087bb4efa2aa68fecc9b892f93bec196d1c6765323e6e748d114a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-30b-a3b-instruct",
+      "sha256": "95e5714190ad49d577fe09c0c7409fc7f8c66b7cda63e1e157cb927593d34275"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-32b-instruct",
+      "sha256": "b025c205cf71152ae2737e0b0681e2d32e87e508b5ece946810c52c363570343"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-6-27b",
+      "sha256": "869264bedd2e458038fe4e649725f81c6edcd50c865eaab4e52bc769abcd15ec"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-6-max",
+      "sha256": "ce8f301071cbff13d79d7a1cf115076a69e42aa4730876c3fe08bbdbfd759080"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-6-plus",
+      "sha256": "c1c3b0c0b4102dad0f218c69b062a79f761f5e77180196a27fc443c98538cf0f"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-7-max",
+      "sha256": "5d36d159daef88408538c2382f175fd99d8c13923bc708f60d925d7555d1c7ff"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-7-plus",
+      "sha256": "f2d36442039be9c8979895a149ac20890a4f5b5a24e55cf654d2d41f55d1c2b2"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-8-2-4t-a95b",
+      "sha256": "4be01e1509ab33ea4edc0b9f7de80ba668685d11f088d34f75ab0e2d303889c5"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-8-27b",
+      "sha256": "359c3e00844003ec560ea0b094dee5ddc9c29a6dca2b865d39b919db4d7728f4"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-8-max",
+      "sha256": "b56093ba49aa50648ca912798be41adb3bf4879346d9cbd5acc29c7b3fe79996"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-8-max-0902",
+      "sha256": "9baa39a1534ffd33f9e14b4b25580ba6767ff3dd167c262601358d1d0174097a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-coder-30b-a3b-instruct",
+      "sha256": "8e31f2bbd1c89fd6e6c3b7bb2a45bb6f3ed7db7bc534276816294f526b93857a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-coder-480b-a35b-instruct",
+      "sha256": "30047859d50d6b2b63e7a3e7115353fdd66c66be186526bbe57e591b9805713e"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-coder-next",
+      "sha256": "dc47cb4a4b2e40df728997715092f98741dcc2bb497425a36c4c1fdb498412a9"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-max",
+      "sha256": "835196881dfa9ee258a141bfde1debbda04a96bae19771f2710f743faa70abb4"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-max-preview",
+      "sha256": "fb194e06b05092cca194e1ace1775f14f2032985f9d4eef2310012cf07fdce5f"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-max-thinking",
+      "sha256": "5a500fe5abc8ed773e3400f71b3b18e3aa41b09d83008ce18634f9bd701a54c9"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-next-80b-a3b",
+      "sha256": "845c801e9df3fbff0d940a19d5d5dc4c6238bef91bb89436aa53419e35749179"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-next-80b-a3b-instruct",
+      "sha256": "93cf82f7f6c4bc5ee57b5c34ff33e04183563dcef11f5886b42d89bd4db910e1"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-vl-235b-a22b",
+      "sha256": "380eeba28cbecf947da7774a40de3af73d81d400f7d9f1c0c7f4af732b0cbd45"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/qwen3-vl-235b-a22b-instruct",
+      "sha256": "a3a373e5b87648b6657d46e8e0eabf7bceca67969cf7761ce6445dcd968b2513"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/sonar",
+      "sha256": "a9c409f079ba12cb689ced09cf70c10ffdeb5fe7c1365a77db3cb8ec89e1116a"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/step-3-7-flash",
+      "sha256": "1d8c28a876324620e66832dfac15984447589a69c909992ea9fa8a2fea4fc555"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/step-5-preview",
+      "sha256": "7c1aa5f12ccd3314838d98b9c99f00eec9938c177236e5f300cf009535ff3ef5"
+    },
+    {
+      "url": "https://artificialanalysis.ai/models/releases/trinity-large-thinking",
+      "sha256": "18e535737bd88df1fc3b6f6a6bd792c5df86c183e76a7e20d3679187d1a7d65c"
+    }
+  ]
+}

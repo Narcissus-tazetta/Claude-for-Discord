@@ -75,8 +75,11 @@ function evaluationSummary(registry: Registry, currency: Currency, rate: number)
   const reviewed = registry.models.filter((m) => benchmarkReview(m)).length;
   return (
     `**Autoの準備**　採用済み ${approved}モデル ／ 公開指標確認 ${reviewed} ／ 動作テスト完了 ${checked}/${pool.length}候補\n` +
-    `-# 一覧全件を評価する仕組みではありません。1日${progress?.dailyLimit ?? 2}モデル・月${money(progress?.budgetUsd ?? 0.5, currency, rate, 2)}の評価枠。未評価も手動利用可。` +
+    `-# 公開指標の確認に日次制限はありません。API動作テストは有料1日${progress?.dailyLimit ?? 2}モデル・月${money(progress?.budgetUsd ?? 0.5, currency, rate, 2)}の評価枠。未評価も手動利用可。` +
     (progress ? `今日の評価試行 ${progress.attemptsToday}/${progress.dailyLimit}。` : "") +
+    (progress
+      ? `無料モデルは別枠で ${progress.freeAttemptsToday ?? 0}/${progress.freeDailyLimit ?? 24}。`
+      : "") +
     (progress?.lastFailure
       ? `直近の未完了理由：${progress.lastFailure.reason}（${progress.lastFailure.model}）。`
       : "") +

@@ -134,6 +134,72 @@ const answers = [
 ];
 
 describe("StateDO", () => {
+  test("free evaluation resumes passed probes after recovery instead of staying blocked for a day", async () => {
+    const { state, ready, kv, ctx } = setup();
+    await ready();
+    const now = Date.now();
+    const day = new Date(now + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const free = { ...model("poolside/free-test"), input: 0, output: 0, maxOutput: 32768 };
+    kv.set("ai_registry", { ...registry(), models: [free], evaluations: {} });
+    kv.set("ai_free_evaluation_day_v2", { day, ids: [free.id, free.id, free.id] });
+    kv.set("ai_evaluation_day", { day, ids: ["openai/gpt-test", "google/gemini-test"] });
+    kv.set("ai_maintenance_due", now + DAY_MS);
+    let recovered = false;
+    let passed = 0;
+    let calls = 0;
+    spyOn(globalThis, "fetch").mockImplementation((async (_url: string, options?: RequestInit) => {
+      const body = JSON.parse(String(options?.body));
+      expect(body.model).toBe(free.id);
+      calls++;
+      if (!recovered && passed > 0) return json({}, 503);
+      return json({
+        choices: [{ message: { content: answers[passed++] }, finish_reason: "stop" }],
+      });
+    }) as any);
+    const failed = JSON.parse(await state.prepareRegistry(true, true, "strong"));
+    expect(calls).toBe(3);
+    expect(failed.progress.freeAttemptsToday).toBe(4);
+    expect(await ctx.storage.getAlarm()).toBeLessThan(now + 6 * 60 * 1000);
+    await state.prepareRegistry(true, true, "strong");
+    expect(calls).toBe(3);
+    spyOn(Date, "now").mockReturnValue(now + 6 * 60 * 1000);
+    recovered = true;
+    const result = JSON.parse(await state.prepareRegistry(true, true, "strong"));
+    expect(calls).toBe(8);
+    expect(passed).toBe(6);
+    expect(result.evaluations[free.id].complex).toBe(true);
+    expect(result.progress.lastFailure).toBeUndefined();
+    expect(result.progress.freeAttemptsToday).toBe(5);
+    expect(result.progress.attemptsToday).toBe(2);
+  });
+  test("free bootstrap ignores exhausted paid quota and tries another model after a transient failure", async () => {
+    const { state, ready, kv } = setup();
+    await ready();
+    const day = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const free = { ...model("meta/free-test"), input: 0, output: 0, maxOutput: 32768 };
+    const broken = { ...free, id: "deepseek/free-test", released: 200 };
+    kv.set("ai_registry", { ...registry(), models: [broken, free, model()] });
+    kv.set("ai_evaluation_day", { day, ids: ["openai/gpt-test", "google/gemini-test"] });
+    let calls = 0;
+    let failed = 0;
+    spyOn(globalThis, "fetch").mockImplementation((async (_url: string, options?: RequestInit) => {
+      const body = JSON.parse(String(options?.body));
+      if (body.model === broken.id) {
+        failed++;
+        return json({}, 503);
+      }
+      expect(body.model).toBe(free.id);
+      expect(body.max_tokens).toBeGreaterThanOrEqual(4864);
+      return json({ choices: [{ message: { content: answers[calls++] }, finish_reason: "stop" }] });
+    }) as any);
+    const result = JSON.parse(await state.prepareRegistry(true, true, "strong"));
+    expect(failed).toBe(2);
+    expect(calls).toBe(6);
+    expect(result.evaluations[free.id].complex).toBe(true);
+    expect(result.progress.attemptsToday).toBe(2);
+    expect(result.progress.freeAttemptsToday).toBe(2);
+    expect(kv.get("ai_evaluation_day").ids).toHaveLength(2);
+  });
   test("free Auto evaluates other creators with no paid evaluation budget and counts daily attempts", async () => {
     const { state, ready, kv } = setup({ AI_EVALUATION_BUDGET_USD: "0" });
     await ready();
@@ -152,13 +218,14 @@ describe("StateDO", () => {
     }) as any);
     const first = JSON.parse(await state.prepareRegistry(true, true));
     expect(calls).toBe(6);
-    expect(first.progress.attemptsToday).toBe(1);
+    expect(first.progress.freeAttemptsToday).toBe(1);
+    expect(first.progress.attemptsToday).toBe(0);
     const adopted = first.models.find((m: ModelInfo) => isApproved(first, m));
     expect(adopted).toBeDefined();
     kv.get("ai_registry").evaluations = {};
     const second = JSON.parse(await state.prepareRegistry(true, true));
     expect(calls).toBe(12);
-    expect(second.progress.attemptsToday).toBe(2);
+    expect(second.progress.freeAttemptsToday).toBe(2);
     kv.get("ai_registry").evaluations = {};
     await state.prepareRegistry(true, true);
     expect(calls).toBe(12);
@@ -166,10 +233,17 @@ describe("StateDO", () => {
   test("defaults to Auto and retains existing user preferences", async () => {
     const { state, ready } = setup();
     await ready();
-    expect(state.getPrefs("new")).toMatchObject({ model: "auto", effort: "medium" });
+    expect(state.getPrefs("new")).toMatchObject({
+      model: "auto",
+      effort: "medium",
+      ephemeral: false,
+    });
     state.setPref("old", "model", "claude-haiku-4-5");
     state.setPref("old", "ephemeral", false);
     expect(state.getPrefs("old")).toMatchObject({ model: "claude-haiku-4-5", ephemeral: false });
+    state.setPref("private", "ephemeral", true);
+    state.setPref("private", "model", "auto-free");
+    expect(state.getPrefs("private")).toMatchObject({ model: "auto-free", ephemeral: true });
   });
   test("concurrent bootstraps share one catalog fetch and one complete evaluation suite", async () => {
     const { state, ready, kv } = setup();
