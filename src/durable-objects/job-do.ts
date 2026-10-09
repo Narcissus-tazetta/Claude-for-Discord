@@ -300,7 +300,7 @@ export class JobDO extends DurableObject<Env> {
       await this.markAnswered();
       return null;
     }
-    const delivered = await live.finish(this.answerBody(answer, prefs), answerButtons());
+    const delivered = await live.finish(answer.text, answerButtons(), this.footer(answer, prefs));
     await this.markAnswered();
     await this.state().saveRegenRecord({
       chunkIds: delivered.ids,
@@ -320,11 +320,11 @@ export class JobDO extends DurableObject<Env> {
   }
 
   /** The cost is left off until billing confirms it, unless it never can be. */
-  private answerBody(answer: Answer, prefs: Prefs): string {
+  private footer(answer: Answer, prefs: Prefs): string {
     const cost = confirmable(answer.cost)
       ? undefined
       : costLabel(answer.cost, prefs.currency, usdJpyRate(this.env.AI_USD_JPY_RATE));
-    return `${answer.text}\n\n${answerFooter(answer, cost)}`;
+    return answerFooter(answer, cost);
   }
 
   /** The stashed message if the modal was answered in time, otherwise a fresh read. */
@@ -396,7 +396,7 @@ export class JobDO extends DurableObject<Env> {
     }
     await ack.stop();
 
-    const delivered = await reply.finish(this.answerBody(answer, prefs), answerButtons());
+    const delivered = await reply.finish(answer.text, answerButtons(), this.footer(answer, prefs));
     await state.saveRegenRecord({
       chunkIds: delivered.ids,
       messagesJson: record.messagesJson,

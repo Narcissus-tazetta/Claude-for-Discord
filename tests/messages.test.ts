@@ -84,6 +84,25 @@ describe("chunkText", () => {
     expect(chunks[0].endsWith("🎉")).toBe(true);
     expect(chunks[1]).toBe("y");
   });
+
+  test("breaks at a newline in the second half of the window", () => {
+    const first = "a".repeat(DISCORD_CHUNK_LIMIT - 100);
+    const chunks = chunkText(`${first}\n${"b".repeat(300)}`);
+    expect(chunks[0]).toBe(`${first}\n`);
+    expect(chunks[1]).toBe("b".repeat(300));
+  });
+
+  test("never cuts through the footer, even when the body ends at the boundary", () => {
+    const footer = "-# モデル: anthropic/claude-haiku-5.5";
+    for (const length of [DISCORD_CHUNK_LIMIT - 20, DISCORD_CHUNK_LIMIT, 1990]) {
+      const chunks = chunkText("あ".repeat(length), footer);
+      const last = chunks[chunks.length - 1];
+      expect(last.endsWith(footer)).toBe(true);
+      expect(last.split("\n").at(-1)).toBe(footer);
+      // Room remains for the confirmed cost appended later.
+      expect(Array.from(`${last}｜費用 ¥0.17（確定）`).length).toBeLessThanOrEqual(2000);
+    }
+  });
 });
 
 describe("attachmentBlocks", () => {

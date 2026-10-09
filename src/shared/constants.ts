@@ -3,6 +3,7 @@
 
 export const HISTORY_DEPTH = 6;
 export const DISCORD_CHUNK_LIMIT = 1900;
+export const DISCORD_MESSAGE_LIMIT = 2000;
 // Regenerate cache: how many past answers we keep enough state on to redo. Bounded so the
 // StateDO doesn't accumulate unbounded rows; oldest entries drop first.
 export const MAX_REGEN_RECORDS = 200;

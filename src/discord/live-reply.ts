@@ -108,9 +108,9 @@ export class LiveReply {
     await this.inflight;
   }
 
-  async finish(body: string, components: unknown[]): Promise<Delivered> {
+  async finish(body: string, components: unknown[], footer?: string): Promise<Delivered> {
     await this.stop();
-    const chunks = chunkText(this.header + body);
+    const chunks = chunkText(this.header + body, footer);
     let failed = false;
     const last = chunks.length - 1;
     for (let i = 0; i < chunks.length; i++) {
