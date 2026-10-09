@@ -203,7 +203,11 @@ export class JobDO extends DurableObject<Env> {
     }
     // A BYOK record has no total, so it cannot confirm the sum either.
     const confirmed = complete && costs.every((cost) => typeof cost === "number");
-    const total = confirmed ? costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0) : undefined;
+    // Watches stored before direct Anthropic calls existed carry no settledUsd.
+    const settled = watch.cost.settledUsd ?? 0;
+    const total = confirmed
+      ? costs.reduce<number>((sum, cost) => sum + (cost ?? 0), settled)
+      : undefined;
     console.log(JSON.stringify({ event: "cost_watch", confirmed, attempts: watch.attempt, total }));
     const label = costLabel(watch.cost, watch.currency, watch.rate, total);
     const discord = this.discord();

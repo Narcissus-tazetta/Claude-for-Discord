@@ -10,6 +10,7 @@ import {
 import { type Env, MSG_NO_TEXT, maxTokens } from "../shared/constants";
 import { type Currency, money } from "../shared/currency";
 import type { AnthropicMessage, Prefs } from "../shared/types";
+import { AnthropicClient, anthropicModelId } from "./anthropic";
 import { BudgetError, type BudgetKind, positiveSetting } from "./budget";
 import {
   type ChatMessage,
@@ -64,8 +65,10 @@ export interface SpendPort {
 /** Everything billed for one answer: classification, failed attempts and the answer itself. */
 export interface AnswerCost {
   estimatedUsd: number;
-  /** Gateway billing records that together make up the confirmed total. */
+  /** Gateway billing records that, with `settledUsd`, make up the confirmed total. */
   generationIds: string[];
+  /** Spend already final when the answer was delivered (direct Anthropic calls). */
+  settledUsd: number;
   /** A call failed with unknown billing, so no total can be confirmed. */
   unknown: boolean;
 }
@@ -74,6 +77,8 @@ export interface Answer {
   /** The answer text, with a note when the output cap cut it short. */
   text: string;
   model: string;
+  /** Answered on the owner's Anthropic key rather than through Gateway. */
+  direct: boolean;
   preview: boolean;
   cost: AnswerCost;
 }
@@ -91,6 +96,8 @@ export function costLabel(
   rate: number,
   confirmedUsd?: number,
 ): string {
+  if (confirmedUsd === undefined && !cost.unknown && !cost.generationIds.length && cost.settledUsd)
+    confirmedUsd = cost.settledUsd;
   if (confirmedUsd !== undefined)
     return `費用 ${money(confirmedUsd, currency, rate, 5).replace(/^約/, "")}`;
   const amount = money(cost.estimatedUsd, currency, rate, 5).replace(/^約/, "");
@@ -104,13 +111,15 @@ export function confirmable(cost: AnswerCost): boolean {
 
 export function answerFooter(answer: Answer, costText?: string): string {
   const preview = answer.preview ? "／Preview" : "";
-  return `-# モデル: ${answer.model}${preview}${costText ? `｜${costText}` : ""}`;
+  const route = answer.direct ? "（Anthropic API）" : "";
+  return `-# モデル: ${answer.model}${route}${preview}${costText ? `｜${costText}` : ""}`;
 }
 
 /** One call context per answer/evaluation: classification and retries share its cost allowance. */
 export class PaidCalls {
   private charged = 0;
   private estimated = 0;
+  private settled = 0;
   private unknown = false;
   private generationIds: string[] = [];
   private unrecorded = false;
@@ -120,6 +129,7 @@ export class PaidCalls {
     private readonly kind: BudgetKind,
     private readonly limit: number,
     private readonly gateway = new GatewayClient(env),
+    private readonly anthropic: AnthropicClient | null = null,
   ) {}
 
   get remaining(): number {
@@ -134,6 +144,7 @@ export class PaidCalls {
     return {
       estimatedUsd: this.estimated,
       generationIds: [...this.generationIds],
+      settledUsd: this.settled,
       unknown: this.unknown || this.unrecorded,
     };
   }
@@ -158,7 +169,7 @@ export class PaidCalls {
     this.charged += reservation;
     let result: GatewayResult;
     try {
-      result = await this.gateway.complete(model, messages, output, extra, onText);
+      result = await this.call(model, messages, output, extra, needs, onText);
     } catch (error) {
       const cost = error instanceof GatewayError && error.definitelyUnbilled ? 0 : null;
       await this.state.settleSpend(id, cost);
@@ -166,7 +177,10 @@ export class PaidCalls {
       else this.unknown = true;
       throw error;
     }
-    if (result.generationId) {
+    if (result.provider === "anthropic") {
+      await this.state.settleSpend(id, result.cost);
+      this.settled += result.cost ?? 0;
+    } else if (result.generationId) {
       await this.state.deferSpend(id, result.generationId);
       this.generationIds.push(result.generationId);
     } else {
@@ -199,6 +213,29 @@ export class PaidCalls {
       }),
     );
     return result;
+  }
+
+  private async call(
+    model: ModelInfo,
+    messages: ChatMessage[],
+    output: number,
+    extra: Record<string, unknown>,
+    needs: TaskNeeds | undefined,
+    onText?: (text: string) => Promise<void>,
+  ): Promise<GatewayResult> {
+    if (this.anthropic && needs && anthropicModelId(model)) {
+      try {
+        return await this.anthropic.complete(model, messages, output, extra, needs, onText);
+      } catch (error) {
+        // Exhausted credit, a revoked key or an id the API does not know: nothing was billed,
+        // so the same request can still go through Gateway.
+        if (!(error instanceof GatewayError && error.definitelyUnbilled)) throw error;
+        console.log(
+          JSON.stringify({ event: "anthropic_fallback", model: model.id, status: error.status }),
+        );
+      }
+    }
+    return await this.gateway.complete(model, messages, output, extra, onText);
   }
 }
 
@@ -234,7 +271,15 @@ export async function askAI(
     );
   }
   const limit = positiveSetting(env.AI_MAX_ANSWER_USD, 0.25);
-  const calls = new PaidCalls(env, state, "answer", limit);
+  // Only a manual pick goes direct: Auto's evaluations and fallbacks are measured on Gateway.
+  const calls = new PaidCalls(
+    env,
+    state,
+    "answer",
+    limit,
+    undefined,
+    !automatic && env.ANTHROPIC_API_KEY ? new AnthropicClient(env) : null,
+  );
   const output = maxTokens(env);
 
   const heuristicTier = needs.tier;
@@ -365,6 +410,7 @@ export async function askAI(
       return {
         text: (result.text.trim() ? result.text : MSG_NO_TEXT) + truncated,
         model: result.model,
+        direct: result.provider === "anthropic",
         preview: model.preview,
         cost: calls.cost,
       };

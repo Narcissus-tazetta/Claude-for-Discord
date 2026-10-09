@@ -12,6 +12,8 @@ export interface GatewayResult {
   model: string;
   /** Billing lookup key. Usage is ingested asynchronously, so cost is resolved later. */
   generationId: string | null;
+  /** "anthropic" results are billed to the owner's Anthropic key, already final in `cost`. */
+  provider: "gateway" | "anthropic";
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
@@ -326,6 +328,7 @@ function buildResult(
     text,
     model: typeof data.model === "string" ? data.model : model.id,
     generationId: typeof data.id === "string" && data.id ? data.id : null,
+    provider: "gateway",
     inputTokens: Number(data.usage?.prompt_tokens) || 0,
     outputTokens: Number(data.usage?.completion_tokens) || 0,
     reasoningTokens: Number(data.usage?.completion_tokens_details?.reasoning_tokens) || 0,

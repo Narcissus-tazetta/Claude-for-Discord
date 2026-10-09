@@ -59,6 +59,8 @@ export interface Env {
   AI_GATEWAY_API_KEY?: string;
   /** Usually omitted; useful for local mock servers. Includes the /v1 prefix. */
   AI_GATEWAY_BASE_URL?: string;
+  /** When set, manually selected Claude models are called on this key instead of Gateway. */
+  ANTHROPIC_API_KEY?: string;
   AI_DEFAULT_MODEL?: string;
   AI_MONTHLY_BUDGET_USD?: string;
   AI_MAX_ANSWER_USD?: string;

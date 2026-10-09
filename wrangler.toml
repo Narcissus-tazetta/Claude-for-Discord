@@ -37,6 +37,7 @@ AI_USD_JPY_RATE = "158.10"
 # Set with `wrangler secret put` — never in this file:
 #   DISCORD_BOT_TOKEN   (reading messages when walking a reply chain)
 #   AI_GATEWAY_API_KEY
+#   ANTHROPIC_API_KEY   (optional: manually chosen Claude models bypass Gateway)
 #   ALLOWED_USER_IDS    (comma-separated; a secret only so personal Discord ids stay out of git)
 
 [observability.logs]
