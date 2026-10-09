@@ -1,11 +1,11 @@
-import type { Env } from "./constants";
-import { handleInteraction } from "./interactions";
-import { deferSettings, isSettingsInteraction } from "./settings-dispatch";
-import { CB_PONG, type Interaction, IT_PING } from "./types";
-import { verifyRequest } from "./verify";
+import { handleInteraction } from "./discord/interactions";
+import { verifyRequest } from "./discord/verify";
+import { deferSettings, isSettingsInteraction } from "./settings/dispatch";
+import type { Env } from "./shared/constants";
+import { CB_PONG, type Interaction, IT_PING } from "./shared/types";
 
-export { JobDO } from "./job-do";
-export { StateDO } from "./state-do";
+export { JobDO } from "./durable-objects/job-do";
+export { StateDO } from "./durable-objects/state-do";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

@@ -3,29 +3,29 @@
  *
  *   bun run scripts/register-commands.ts
  *
- * Reads DISCORD_TOKEN (and optionally DISCORD_APPLICATION_ID) from .env. The application id
+ * Reads DISCORD_BOT_TOKEN (and optionally DISCORD_APPLICATION_ID) from .dev.vars. The application id
  * is looked up from the token when it isn't set, so there's nothing extra to configure.
  */
 import { readFileSync } from "node:fs";
-import { COMMAND_DEFINITIONS } from "../src/commands";
+import { COMMAND_DEFINITIONS } from "../src/discord/commands";
 
 function loadEnv(): Record<string, string> {
   const env: Record<string, string> = { ...process.env } as Record<string, string>;
   try {
-    for (const line of readFileSync(new URL("../.env", import.meta.url), "utf8").split("\n")) {
+    for (const line of readFileSync(new URL("../.dev.vars", import.meta.url), "utf8").split("\n")) {
       const match = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line);
       if (match) env[match[1]] ??= match[2].trim().replace(/^["']|["']$/g, "");
     }
   } catch {
-    // No .env: rely on the ambient environment.
+    // No .dev.vars: rely on the ambient environment.
   }
   return env;
 }
 
 const env = loadEnv();
-const token = env.DISCORD_TOKEN ?? env.DISCORD_BOT_TOKEN;
+const token = env.DISCORD_BOT_TOKEN;
 if (!token) {
-  console.error("DISCORD_TOKEN is not set");
+  console.error("DISCORD_BOT_TOKEN is not set");
   process.exit(1);
 }
 
