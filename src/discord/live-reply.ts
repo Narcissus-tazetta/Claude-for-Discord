@@ -33,8 +33,6 @@ export function answerButtons(): unknown[] {
 // frames are spread over what the bucket reports as remaining. This is only the pace before
 // the first response has reported any.
 const FALLBACK_FRAME_MS = 1500;
-// A floor even when the bucket allows more; chosen by eye, not measured.
-const MIN_FRAME_MS = 300;
 // The status line only changes its elapsed seconds.
 const STATUS_FRAME_MS = 1000;
 const TICK_MS = 250;
@@ -65,6 +63,9 @@ export class LiveReply {
   private lastFlush = 0;
   private notBefore = 0;
   private frames = 0;
+  /** Frames and time while the answer text was growing, apart from the waiting status. */
+  private textFrames = 0;
+  private firstTextAt: number | null = null;
   private refused = 0;
   private lastRendered = "";
   private inflight: Promise<void> | null = null;
@@ -123,6 +124,8 @@ export class LiveReply {
       JSON.stringify({
         event: "live_reply",
         frames: this.frames,
+        textFrames: this.textFrames,
+        textMs: this.firstTextAt === null ? null : Date.now() - this.firstTextAt,
         refused: this.refused,
         seconds: Math.round((Date.now() - this.started) / 1000),
         limit: rate?.limit ?? null,
@@ -191,6 +194,10 @@ export class LiveReply {
         if (this.sent[i] !== chunks[i]) await this.write(i, chunks[i]);
       }
       this.frames += 1;
+      if (growing) {
+        this.textFrames += 1;
+        this.firstTextAt ??= Date.now();
+      }
       this.notBefore = Date.now() + this.spacing();
     } catch (err) {
       const wait = err instanceof DiscordError ? err.retryAfterMs : null;
@@ -209,7 +216,7 @@ export class LiveReply {
     if (!rate) return FALLBACK_FRAME_MS;
     // One request stays in hand so the final edit is not the one Discord refuses.
     const usable = rate.remaining - 1;
-    return usable > 0 ? Math.max(MIN_FRAME_MS, rate.resetAfterMs / usable) : rate.resetAfterMs;
+    return usable > 0 ? rate.resetAfterMs / usable : rate.resetAfterMs;
   }
 
   private async write(i: number, content: string, components?: unknown[]): Promise<void> {

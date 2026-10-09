@@ -49,7 +49,7 @@ describe("live reply pacing", () => {
     await sleep(350);
     await fast.setText("ab");
     await fast.stop();
-    // 1s over 39 usable requests is below the floor, so the second frame went out after it.
+    // 1s over 39 usable requests leaves about 26ms between frames.
     expect(plenty).toEqual(["a ▌", "ab ▌"]);
 
     const scarce = discordWith(1, 2);
