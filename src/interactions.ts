@@ -21,6 +21,7 @@ import {
 import { CURRENCIES, type Currency, usdJpyRate } from "./currency";
 import { isSupportedAttachment } from "./history";
 import type { Job } from "./job-do";
+import { CID_ANSWER_CONTINUE, CID_ANSWER_REGEN } from "./live-reply";
 import { DISCOVERY_VERSION, type Registry } from "./model-registry";
 import {
   CID_CURRENCY,
@@ -49,6 +50,7 @@ import {
   CB_MODAL,
   CB_UPDATE_MESSAGE,
   type DiscordAttachment,
+  type DiscordMessage,
   type Interaction,
   IT_APPLICATION_COMMAND,
   IT_MESSAGE_COMPONENT,
@@ -164,10 +166,10 @@ async function handleCommand(
     }
     case CMD_CONTINUE:
     case CMD_CONTINUE_AI:
-      return await handleContinueMenu(interaction, env);
+      return await handleContinueMenu(interaction, env, menuTarget(interaction));
     case CMD_REGENERATE:
     case CMD_REGENERATE_AI:
-      return await handleRegenerateMenu(interaction, env, userId);
+      return await handleRegenerateMenu(interaction, env, userId, menuTarget(interaction));
     default:
       return new Response("unknown command", { status: 400 });
   }
@@ -202,9 +204,16 @@ async function handleClaude(interaction: Interaction, env: Env, userId: string):
   return defer(ephemeral);
 }
 
-async function handleContinueMenu(interaction: Interaction, env: Env): Promise<Response> {
+function menuTarget(interaction: Interaction): DiscordMessage | undefined {
   const targetId = interaction.data?.target_id;
-  const target = targetId ? interaction.data?.resolved?.messages?.[targetId] : undefined;
+  return targetId ? interaction.data?.resolved?.messages?.[targetId] : undefined;
+}
+
+async function handleContinueMenu(
+  interaction: Interaction,
+  env: Env,
+  target: DiscordMessage | undefined,
+): Promise<Response> {
   if (!target) return new Response("missing target message", { status: 400 });
 
   // A modal submit arrives with nothing but its custom_id, so park the resolved message in
@@ -239,9 +248,8 @@ async function handleRegenerateMenu(
   interaction: Interaction,
   env: Env,
   userId: string,
+  target: DiscordMessage | undefined,
 ): Promise<Response> {
-  const targetId = interaction.data?.target_id;
-  const target = targetId ? interaction.data?.resolved?.messages?.[targetId] : undefined;
   if (!target) return new Response("missing target message", { status: 400 });
 
   if (target.author?.id !== env.DISCORD_APPLICATION_ID) {
@@ -302,6 +310,11 @@ async function handleComponent(
   userId: string,
 ): Promise<Response> {
   const customId = interaction.data?.custom_id ?? "";
+  // The answer's own buttons act on the message they are attached to.
+  if (customId === CID_ANSWER_REGEN)
+    return await handleRegenerateMenu(interaction, env, userId, interaction.message);
+  if (customId === CID_ANSWER_CONTINUE)
+    return await handleContinueMenu(interaction, env, interaction.message);
   const state = stateStub(env);
   let prefs: Prefs;
 

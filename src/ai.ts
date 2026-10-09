@@ -1,6 +1,6 @@
 import { BudgetError, type BudgetKind, positiveSetting } from "./budget";
 import { type Env, MSG_NO_TEXT, maxTokens } from "./constants";
-import { type Currency, money, usdJpyRate } from "./currency";
+import { type Currency, money } from "./currency";
 import {
   type ChatMessage,
   GatewayClient,
@@ -61,11 +61,59 @@ export interface SpendPort {
   deferSpend(id: string, generationId: string): void | Promise<void>;
 }
 
+/** Everything billed for one answer: classification, failed attempts and the answer itself. */
+export interface AnswerCost {
+  estimatedUsd: number;
+  /** Gateway billing records that together make up the confirmed total. */
+  generationIds: string[];
+  /** A call failed with unknown billing, so no total can be confirmed. */
+  unknown: boolean;
+}
+
+export interface Answer {
+  /** The answer text, with a note when the output cap cut it short. */
+  text: string;
+  model: string;
+  preview: boolean;
+  cost: AnswerCost;
+}
+
+/** What the person sees while the answer is being prepared. */
+export interface AnswerProgress {
+  status(text: string): Promise<void>;
+  /** The whole answer so far; an empty string restarts it after switching models. */
+  text(partial: string): Promise<void>;
+}
+
+export function costLabel(
+  cost: AnswerCost,
+  currency: Currency,
+  rate: number,
+  confirmedUsd?: number,
+): string {
+  if (confirmedUsd !== undefined)
+    return `費用 ${money(confirmedUsd, currency, rate, 5).replace(/^約/, "")}`;
+  const amount = money(cost.estimatedUsd, currency, rate, 5).replace(/^約/, "");
+  return cost.unknown ? `概算 ${amount}（失敗した呼び出しの費用は未確定）` : `概算 ${amount}`;
+}
+
+/** Billing can only be confirmed when every call left a Gateway billing record to look up. */
+export function confirmable(cost: AnswerCost): boolean {
+  return !cost.unknown && cost.generationIds.length > 0;
+}
+
+export function answerFooter(answer: Answer, costText?: string): string {
+  const preview = answer.preview ? "／Preview" : "";
+  return `-# モデル: ${answer.model}${preview}${costText ? `｜${costText}` : ""}`;
+}
+
 /** One call context per answer/evaluation: classification and retries share its cost allowance. */
 export class PaidCalls {
   private charged = 0;
   private estimated = 0;
   private unknown = false;
+  private generationIds: string[] = [];
+  private unrecorded = false;
   constructor(
     env: Env,
     private readonly state: SpendPort,
@@ -79,8 +127,15 @@ export class PaidCalls {
   }
   /** Gateway's reported total, or a token/tool estimate; the ledger is corrected afterwards. */
   costLabel(currency: Currency, rate: number): string {
-    const amount = money(this.estimated, currency, rate, 5).replace(/^約/, "");
-    return this.unknown ? `概算 ${amount}（失敗した呼び出しの費用は未確定）` : `概算 ${amount}`;
+    return costLabel(this.cost, currency, rate);
+  }
+
+  get cost(): AnswerCost {
+    return {
+      estimatedUsd: this.estimated,
+      generationIds: [...this.generationIds],
+      unknown: this.unknown || this.unrecorded,
+    };
   }
 
   async complete(
@@ -89,6 +144,7 @@ export class PaidCalls {
     output: number,
     extra: Record<string, unknown> = {},
     needs?: TaskNeeds,
+    onText?: (text: string) => Promise<void>,
   ): Promise<GatewayResult> {
     const input =
       needs?.inputTokens ?? new TextEncoder().encode(JSON.stringify(messages)).length + 512;
@@ -102,7 +158,7 @@ export class PaidCalls {
     this.charged += reservation;
     let result: GatewayResult;
     try {
-      result = await this.gateway.complete(model, messages, output, extra);
+      result = await this.gateway.complete(model, messages, output, extra, onText);
     } catch (error) {
       const cost = error instanceof GatewayError && error.definitelyUnbilled ? 0 : null;
       await this.state.settleSpend(id, cost);
@@ -110,12 +166,20 @@ export class PaidCalls {
       else this.unknown = true;
       throw error;
     }
-    if (result.generationId) await this.state.deferSpend(id, result.generationId);
-    else await this.state.settleSpend(id, null);
+    if (result.generationId) {
+      await this.state.deferSpend(id, result.generationId);
+      this.generationIds.push(result.generationId);
+    } else {
+      await this.state.settleSpend(id, null);
+      this.unrecorded = true;
+    }
+    // Without usage the token estimate would read zero; the reservation is the safe upper bound.
     const spent =
       result.cost ??
-      estimateCost(model, result.inputTokens, result.outputTokens) +
-        toolCost(model, needs, result.toolCalls);
+      (result.usageReported
+        ? estimateCost(model, result.inputTokens, result.outputTokens) +
+          toolCost(model, needs, result.toolCalls)
+        : reservation);
     this.charged += Math.min(reservation, spent) - reservation;
     this.estimated += spent;
     console.log(
@@ -149,7 +213,8 @@ export async function askAI(
   prefs: Prefs,
   env: Env,
   state: DurableObjectStub<StateDO>,
-): Promise<string> {
+  progress?: AnswerProgress,
+): Promise<Answer> {
   if (!env.AI_GATEWAY_API_KEY)
     throw new ConfigurationError(
       "AI_GATEWAY_API_KEY が未設定です。管理者がAPIキーを設定してから利用してください。",
@@ -204,6 +269,7 @@ export async function askAI(
       .map((model) => ({ model, plan: planCall(model, off, 128, classifierNeeds, budget) }))
       .find(({ plan }) => plan?.level === "none");
     if (classifier?.plan) {
+      await progress?.status("🧭 質問の内容を確認しています");
       try {
         const result = await calls.complete(
           classifier.model,
@@ -273,6 +339,8 @@ export async function askAI(
         "この回答の費用見積もりが上限を超えました。質問を短くするか上限を調整してください。",
       );
     const tools = serverTools(model, needs);
+    if (model !== primary) await progress?.text("");
+    await progress?.status(attemptStatus(needs, tools, plan.level, model !== primary));
     try {
       const result = await calls.complete(
         model,
@@ -287,15 +355,19 @@ export async function askAI(
         plan.maxTokens,
         { ...plan.options, ...(tools.length ? { tools, tool_choice: "auto" } : {}) },
         needs,
+        progress && ((partial) => progress.text(partial)),
       );
       await state.recordModelOutcome(model.id, Boolean(result.text.trim()));
       const truncated =
         result.finishReason === "length"
           ? `\n\n*(出力上限 ${plan.maxTokens} トークンに達しました)*`
           : "";
-      const preview = model.preview ? "／Preview" : "";
-      const footer = `\n\n-# モデル: ${result.model}${preview}｜${calls.costLabel(prefs.currency, usdJpyRate(env.AI_USD_JPY_RATE))}`;
-      return (result.text.trim() ? result.text : MSG_NO_TEXT) + truncated + footer;
+      return {
+        text: (result.text.trim() ? result.text : MSG_NO_TEXT) + truncated,
+        model: result.model,
+        preview: model.preview,
+        cost: calls.cost,
+      };
     } catch (error) {
       if (error instanceof GatewayError && error.canFallback) {
         await state.recordModelOutcome(model.id, false);
@@ -305,4 +377,19 @@ export async function askAI(
     }
   }
   throw new Error("no model answered");
+}
+
+/** Only what is certain before the answer starts: offered tools may go unused. */
+function attemptStatus(
+  needs: TaskNeeds,
+  tools: Record<string, unknown>[],
+  level: string,
+  fallback: boolean,
+): string {
+  if (fallback) return "↪️ 別のモデルで回答し直しています";
+  if (needs.pdf) return "📄 PDFを読んでいます";
+  if (needs.vision) return "🖼️ 画像を見ています";
+  if (needs.fetchRequired && tools.length) return "🔗 リンク先を読んでいます";
+  if (tools.length) return "🔍 必要に応じて検索しながら考えています";
+  return level === "none" ? "✍️ 回答を書いています" : "💭 考えています";
 }

@@ -21,6 +21,8 @@ export interface GatewayResult {
   cost: number | null;
   /** Successful server-tool calls by tool name (e.g. `perplexity_search`), when reported. */
   toolCalls: Record<string, number> | null;
+  /** False when the response carried no token usage, so a token-based estimate would read 0. */
+  usageReported: boolean;
 }
 
 export type GenerationCost = { found: false } | { found: true; cost: number | null };
@@ -210,6 +212,8 @@ export class GatewayClient {
     messages: ChatMessage[],
     maxOutput: number,
     extra: Record<string, unknown> = {},
+    /** Streams the answer: called with the whole text so far after each received delta. */
+    onText?: (text: string) => Promise<void>,
   ): Promise<GatewayResult> {
     const started = Date.now();
     const prepared = await this.inlinePdfs(messages);
@@ -226,7 +230,10 @@ export class GatewayClient {
           model: model.id,
           messages: prepared,
           max_tokens: maxOutput,
-          stream: false,
+          stream: Boolean(onText),
+          // Chat Completions omits usage from streams unless asked; Gateway's docs do not say
+          // whether it follows this, so a stream without usage is handled as unreported.
+          ...(onText ? { stream_options: { include_usage: true } } : {}),
           ...extra,
         }),
       });
@@ -249,6 +256,8 @@ export class GatewayClient {
       }
       throw new GatewayError(response.status, attachmentRejected);
     }
+    if (onText && response.headers.get("content-type")?.includes("text/event-stream"))
+      return await readStream(response, model, started, onText);
     let data: Record<string, any>;
     try {
       data = (await response.json()) as Record<string, any>;
@@ -269,27 +278,14 @@ export class GatewayClient {
               .map((b: any) => b.text)
               .join("")
           : "";
-    const meta = message.provider_metadata?.gateway;
-    const toolCalls =
-      meta?.gatewayToolCalls && typeof meta.gatewayToolCalls === "object"
-        ? Object.fromEntries(
-            Object.entries(meta.gatewayToolCalls as Record<string, unknown>).map(
-              ([name, count]) => [name, costNumber(count) ?? 0],
-            ),
-          )
-        : null;
-    return {
+    return buildResult(
+      model,
+      started,
       text,
-      model: typeof data.model === "string" ? data.model : model.id,
-      generationId: typeof data.id === "string" && data.id ? data.id : null,
-      inputTokens: Number(data.usage?.prompt_tokens) || 0,
-      outputTokens: Number(data.usage?.completion_tokens) || 0,
-      reasoningTokens: Number(data.usage?.completion_tokens_details?.reasoning_tokens) || 0,
-      finishReason: data.choices[0].finish_reason ?? "unknown",
-      latencyMs: Date.now() - started,
-      cost: costNumber(meta?.cost),
-      toolCalls,
-    };
+      data,
+      data.choices[0].finish_reason,
+      message.provider_metadata?.gateway,
+    );
   }
 
   /** The total includes inference, reasoning, server tools and gateway surcharges. */
@@ -304,4 +300,92 @@ export class GatewayClient {
     const record = ((await response.json()) as Record<string, any>).data;
     return { found: true, cost: record?.is_byok === true ? null : costNumber(record?.total_cost) };
   }
+}
+
+function buildResult(
+  model: ModelInfo,
+  started: number,
+  text: string,
+  data: Record<string, any>,
+  finishReason: unknown,
+  meta: Record<string, any> | undefined,
+): GatewayResult {
+  const toolCalls =
+    meta?.gatewayToolCalls && typeof meta.gatewayToolCalls === "object"
+      ? Object.fromEntries(
+          Object.entries(meta.gatewayToolCalls as Record<string, unknown>).map(([name, count]) => [
+            name,
+            costNumber(count) ?? 0,
+          ]),
+        )
+      : null;
+  return {
+    text,
+    model: typeof data.model === "string" ? data.model : model.id,
+    generationId: typeof data.id === "string" && data.id ? data.id : null,
+    inputTokens: Number(data.usage?.prompt_tokens) || 0,
+    outputTokens: Number(data.usage?.completion_tokens) || 0,
+    reasoningTokens: Number(data.usage?.completion_tokens_details?.reasoning_tokens) || 0,
+    finishReason: typeof finishReason === "string" ? finishReason : "unknown",
+    latencyMs: Date.now() - started,
+    cost: costNumber(meta?.cost),
+    toolCalls,
+    usageReported: Boolean(data.usage),
+  };
+}
+
+/** Server-Sent Events from Chat Completions: `data: {chunk}` lines, ending with `data: [DONE]`. */
+async function readStream(
+  response: Response,
+  model: ModelInfo,
+  started: number,
+  onText: (text: string) => Promise<void>,
+): Promise<GatewayResult> {
+  if (!response.body) throw new GatewayError(502);
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  const data: Record<string, any> = {};
+  let buffer = "";
+  let text = "";
+  let finishReason: unknown = null;
+  let meta: Record<string, any> | undefined;
+  for (;;) {
+    let chunkText: string | undefined;
+    try {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunkText = value;
+    } catch (error) {
+      if (isTimeout(error)) throw new GatewayError(504);
+      // A dropped connection mid-answer: retryable on another model, billing unknown.
+      throw new GatewayError(502);
+    }
+    buffer += chunkText;
+    for (let end = buffer.indexOf("\n"); end >= 0; end = buffer.indexOf("\n")) {
+      const line = buffer.slice(0, end).trim();
+      buffer = buffer.slice(end + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (payload === "[DONE]") continue;
+      let chunk: Record<string, any>;
+      try {
+        chunk = JSON.parse(payload);
+      } catch {
+        throw new GatewayError(502);
+      }
+      // An error after the headers arrives in-band; part of the answer may be billed.
+      if (chunk.error) throw new GatewayError(502);
+      if (typeof chunk.id === "string" && chunk.id) data.id ??= chunk.id;
+      if (typeof chunk.model === "string") data.model = chunk.model;
+      if (chunk.usage) data.usage = chunk.usage;
+      const choice = chunk.choices?.[0];
+      meta = choice?.delta?.provider_metadata?.gateway ?? chunk.provider_metadata?.gateway ?? meta;
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice?.delta?.content;
+      if (typeof delta === "string" && delta) {
+        text += delta;
+        await onText(text);
+      }
+    }
+  }
+  return buildResult(model, started, text, data, finishReason, meta);
 }
