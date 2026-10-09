@@ -1,18 +1,26 @@
 import { DurableObject } from "cloudflare:workers";
-import { askAI, ConfigurationError } from "./ai";
+import {
+  type Answer,
+  type AnswerCost,
+  answerFooter,
+  askAI,
+  ConfigurationError,
+  confirmable,
+  costLabel,
+} from "./ai";
 import { BudgetError } from "./budget";
-import { chunkText } from "./chunk";
 import {
   type Env,
+  MSG_ANSWER_INTERRUPTED,
   MSG_ATTACHMENT_EXPIRED,
   MSG_GENERIC_ERROR,
   MSG_NO_REGEN_RECORD,
-  MSG_REGEN_SUPERSEDED,
   MSG_REGENERATED,
   MSG_REGENERATED_PARTIAL,
 } from "./constants";
-import { DiscordClient, DiscordError } from "./discord-api";
-import { GatewayError } from "./gateway";
+import { type Currency, usdJpyRate } from "./currency";
+import { DiscordClient } from "./discord-api";
+import { GatewayClient, GatewayError } from "./gateway";
 import {
   attachmentBlocks,
   buildHistoryFromMessage,
@@ -21,6 +29,7 @@ import {
   textBlock,
 } from "./history";
 import { handleInteraction } from "./interactions";
+import { answerButtons, type Delivered, LiveReply } from "./live-reply";
 import type { StateDO } from "./state-do";
 import type {
   AnthropicMessage,
@@ -55,8 +64,26 @@ export type Job =
 
 /** How long a stashed context-menu target survives an unfinished modal. */
 const STASH_TTL_MS = 15 * 60 * 1000;
+/** Gateway usually ingests billing within seconds; past this the estimate is shown instead. */
+const COST_WAIT_MS = 5 * 60 * 1000;
+/** Interaction tokens stop accepting edits after 15 minutes. */
+const TOKEN_EDIT_MS = 14 * 60 * 1000;
+const COST_POLL_MS = [2_000, 3_000, 5_000, 10_000];
+const COST_POLL_MAX_MS = 15_000;
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The cost line still owed to a delivered answer, appended once billing is confirmed. */
+interface CostWatch {
+  token: string;
+  messageId: string;
+  /** The last chunk as delivered; a different current content means it was regenerated. */
+  content: string;
+  cost: AnswerCost;
+  currency: Currency;
+  rate: number;
+  resolved: Record<string, number | null>;
+  deadline: number;
+  attempt: number;
+}
 
 /**
  * One instance per job (idFromName(interaction.token)), because a Durable Object has a
@@ -84,6 +111,8 @@ export class JobDO extends DurableObject<Env> {
   async alarm(): Promise<void> {
     const job = await this.ctx.storage.get<Job>("job");
     if (!job) {
+      const watch = await this.ctx.storage.get<CostWatch>("costWatch");
+      if (watch) return await this.pollCost(watch);
       // Nothing queued: this is the stash-expiry sweep.
       await this.ctx.storage.deleteAll();
       return;
@@ -107,14 +136,16 @@ export class JobDO extends DurableObject<Env> {
       return;
     }
     await this.ctx.storage.put("done", true);
+    const begun = Date.now();
 
+    let watch: CostWatch | null = null;
     try {
       if (job.kind === "settings") {
         await this.runSettings(job);
       } else if (job.kind === "regen") {
-        await this.runRegen(job);
+        watch = await this.runRegen(job);
       } else {
-        await this.runAsk(job);
+        watch = await this.runAsk(job, begun);
       }
     } catch (err) {
       console.error("job failed", job.kind, err);
@@ -122,6 +153,77 @@ export class JobDO extends DurableObject<Env> {
     } finally {
       await this.ctx.storage.deleteAll();
     }
+    if (watch) {
+      await this.ctx.storage.put("costWatch", watch);
+      await this.ctx.storage.setAlarm(Date.now() + COST_POLL_MS[0]);
+    }
+  }
+
+  private costWatch(
+    delivered: Delivered,
+    token: string,
+    answer: Answer,
+    prefs: Prefs,
+    deadline: number,
+  ): CostWatch | null {
+    if (!confirmable(answer.cost)) return null;
+    return {
+      token,
+      messageId: delivered.lastId,
+      content: delivered.lastContent,
+      cost: answer.cost,
+      currency: prefs.currency,
+      rate: usdJpyRate(this.env.AI_USD_JPY_RATE),
+      resolved: {},
+      deadline,
+      attempt: 0,
+    };
+  }
+
+  private async pollCost(watch: CostWatch): Promise<void> {
+    const gateway = new GatewayClient(this.env);
+    for (const id of watch.cost.generationIds) {
+      if (id in watch.resolved) continue;
+      try {
+        const result = await gateway.generationCost(id);
+        if (result.found) watch.resolved[id] = result.cost;
+      } catch (err) {
+        console.log(`cost watch: lookup failed: ${err}`);
+      }
+    }
+    const costs = watch.cost.generationIds.map((id) => watch.resolved[id]);
+    const complete = costs.every((cost) => cost !== undefined);
+    if (!complete && Date.now() < watch.deadline) {
+      watch.attempt += 1;
+      await this.ctx.storage.put("costWatch", watch);
+      await this.ctx.storage.setAlarm(
+        Date.now() + (COST_POLL_MS[watch.attempt] ?? COST_POLL_MAX_MS),
+      );
+      return;
+    }
+    // A BYOK record has no total, so it cannot confirm the sum either.
+    const confirmed = complete && costs.every((cost) => typeof cost === "number");
+    const total = confirmed ? costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0) : undefined;
+    console.log(JSON.stringify({ event: "cost_watch", confirmed, attempts: watch.attempt, total }));
+    const label = costLabel(watch.cost, watch.currency, watch.rate, total);
+    const discord = this.discord();
+    try {
+      const current = await discord.getMessage(watch.token, watch.messageId);
+      if (current.content.trim() !== watch.content.trim()) {
+        console.log("cost watch: answer was replaced; leaving it alone");
+      } else {
+        await discord.editMessage(
+          watch.token,
+          watch.messageId,
+          `${watch.content}｜${label}`,
+          answerButtons(),
+        );
+      }
+    } catch (err) {
+      // Usually the interaction token expired; the answer stays readable without a cost.
+      console.log(`cost watch: could not edit the answer: ${err}`);
+    }
+    await this.ctx.storage.deleteAll();
   }
 
   /**
@@ -161,7 +263,10 @@ export class JobDO extends DurableObject<Env> {
     return await this.state().getPrefs(userId);
   }
 
-  private async runAsk(job: Extract<Job, { kind: "slash" | "continue" }>): Promise<void> {
+  private async runAsk(
+    job: Extract<Job, { kind: "slash" | "continue" }>,
+    begun: number,
+  ): Promise<CostWatch | null> {
     const discord = this.discord();
     let messages: AnthropicMessage[];
 
@@ -178,17 +283,48 @@ export class JobDO extends DurableObject<Env> {
     }
 
     const prefs = await this.prefs(job.userId);
-    const answer = await askAI(messages, prefs, this.env, this.state());
     const header = `**Q:** ${job.prompt}\n\n**A:**\n`;
-    const chunkIds = await this.deliver(discord, job.token, job.ephemeral, header + answer);
+    const live = new LiveReply(discord, job.token, job.ephemeral, header);
+    let answer: Answer;
+    try {
+      answer = await askAI(messages, prefs, this.env, this.state(), {
+        status: (text) => live.setStatus(text),
+        text: (partial) => live.setText(partial),
+      });
+    } catch (err) {
+      await live.stop();
+      if (!live.hasText) throw err;
+      // Keep what was already streamed rather than replacing it with a bare error.
+      console.error("answer failed mid-stream", err);
+      await live.finish(`${live.text}\n\n${MSG_ANSWER_INTERRUPTED}${errorMessage(err)}`, []);
+      await this.markAnswered();
+      return null;
+    }
+    const delivered = await live.finish(this.answerBody(answer, prefs), answerButtons());
+    await this.markAnswered();
     await this.state().saveRegenRecord({
-      chunkIds,
+      chunkIds: delivered.ids,
       messagesJson: JSON.stringify(messages),
       userId: job.userId,
       header,
       ephemeral: job.ephemeral,
       token: job.token,
     });
+    return this.costWatch(
+      delivered,
+      job.token,
+      answer,
+      prefs,
+      Math.min(Date.now() + COST_WAIT_MS, begun + TOKEN_EDIT_MS),
+    );
+  }
+
+  /** The cost is left off until billing confirms it, unless it never can be. */
+  private answerBody(answer: Answer, prefs: Prefs): string {
+    const cost = confirmable(answer.cost)
+      ? undefined
+      : costLabel(answer.cost, prefs.currency, usdJpyRate(this.env.AI_USD_JPY_RATE));
+    return `${answer.text}\n\n${answerFooter(answer, cost)}`;
   }
 
   /** The stashed message if the modal was answered in time, otherwise a fresh read. */
@@ -202,14 +338,14 @@ export class JobDO extends DurableObject<Env> {
     return await discord.fetchMessage(job.channelId, job.messageId);
   }
 
-  private async runRegen(job: Extract<Job, { kind: "regen" }>): Promise<void> {
+  private async runRegen(job: Extract<Job, { kind: "regen" }>): Promise<CostWatch | null> {
     const discord = this.discord();
     const state = this.state();
     const record = await state.getRegenRecord(job.messageId);
     if (!record) {
       await discord.patchOriginal(job.token, MSG_NO_REGEN_RECORD);
       await this.markAnswered();
-      return;
+      return null;
     }
     const recordMessages = JSON.parse(record.messagesJson) as AnthropicMessage[];
 
@@ -217,10 +353,33 @@ export class JobDO extends DurableObject<Env> {
     // asked — that way switching model in /settings then hitting regenerate actually does
     // something. The prompt/history itself stays exactly as originally sent.
     const prefs = await this.prefs(job.userId);
-    let answer: string;
+    // Waiting is shown on the private acknowledgement; the old answer stays intact until new
+    // text arrives, so a failure before that loses nothing.
+    const ack = new LiveReply(discord, job.token, true, "");
+    const reply = new LiveReply(
+      discord,
+      record.token,
+      record.ephemeral,
+      record.header,
+      record.chunkIds,
+      true,
+    );
+    let answer: Answer;
     try {
-      answer = await askAI(recordMessages, prefs, this.env, state);
+      answer = await askAI(recordMessages, prefs, this.env, state, {
+        status: (text) => ack.setStatus(text),
+        text: (partial) => reply.setText(partial),
+      });
     } catch (err) {
+      await ack.stop();
+      await reply.stop();
+      if (reply.hasText) {
+        console.error("regenerate failed mid-stream", err);
+        await reply.finish(
+          `${reply.text}\n\n${MSG_ANSWER_INTERRUPTED}${errorMessage(err)}`,
+          answerButtons(),
+        );
+      }
       // Discord's CDN URLs are signed and expire, so a replay of an old attachment-bearing
       // request can be rejected where the original went through (§6.1).
       if (
@@ -231,37 +390,15 @@ export class JobDO extends DurableObject<Env> {
       ) {
         await discord.patchOriginal(job.token, MSG_ATTACHMENT_EXPIRED);
         await this.markAnswered();
-        return;
+        return null;
       }
       throw err;
     }
+    await ack.stop();
 
-    const chunks = chunkText(record.header + answer);
-    let editFailed = false;
-    for (let i = 0; i < record.chunkIds.length; i++) {
-      const content = i < chunks.length ? chunks[i] : MSG_REGEN_SUPERSEDED;
-      try {
-        await discord.editMessage(record.token, record.chunkIds[i], content);
-      } catch (err) {
-        editFailed = true;
-        console.log(`regenerate: failed to edit chunk ${record.chunkIds[i]}: ${err}`);
-      }
-    }
-
-    const newIds = record.chunkIds.slice(0, chunks.length);
-    for (const extra of chunks.slice(record.chunkIds.length)) {
-      try {
-        const msg = await discord.sendFollowup(record.token, extra, record.ephemeral);
-        newIds.push(msg.id);
-      } catch (err) {
-        // Same 15-minute token expiry that kills the edits above.
-        editFailed = true;
-        console.log(`regenerate: failed to append chunk: ${err}`);
-      }
-    }
-
+    const delivered = await reply.finish(this.answerBody(answer, prefs), answerButtons());
     await state.saveRegenRecord({
-      chunkIds: newIds,
+      chunkIds: delivered.ids,
       messagesJson: record.messagesJson,
       userId: job.userId,
       header: record.header,
@@ -269,60 +406,20 @@ export class JobDO extends DurableObject<Env> {
       token: record.token,
     });
 
-    await discord.patchOriginal(job.token, editFailed ? MSG_REGENERATED_PARTIAL : MSG_REGENERATED);
+    await discord.patchOriginal(
+      job.token,
+      delivered.failed ? MSG_REGENERATED_PARTIAL : MSG_REGENERATED,
+    );
     await this.markAnswered();
-  }
-
-  /** Replace the defer placeholder with chunk 1, then append the rest. Returns message ids. */
-  private async deliver(
-    discord: DiscordClient,
-    token: string,
-    ephemeral: boolean,
-    text: string,
-  ): Promise<string[]> {
-    const chunks = chunkText(text);
-    const first = await this.patchOriginalWhenReady(discord, token, chunks[0]);
-    await this.markAnswered();
-    const ids = [first.id];
-    for (const chunk of chunks.slice(1)) {
-      const msg = await discord.sendFollowup(token, chunk, ephemeral);
-      ids.push(msg.id);
-    }
-    return ids;
-  }
-
-  /**
-   * The alarm can, in principle, out-race Discord recording our deferred response, which
-   * shows up as an unknown-token rejection on the very first edit. Give it a couple of
-   * chances before failing.
-   */
-  private async patchOriginalWhenReady(
-    discord: DiscordClient,
-    token: string,
-    content: string,
-  ): Promise<DiscordMessage> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await discord.patchOriginal(token, content);
-      } catch (err) {
-        const unknownToken =
-          err instanceof DiscordError && (err.status === 404 || err.status === 401);
-        if (attempt >= 2 || !unknownToken) throw err;
-        await sleep(1000);
-      }
-    }
+    // The original token's age is unknown here; an expired one just fails the later edit.
+    return delivered.failed
+      ? null
+      : this.costWatch(delivered, record.token, answer, prefs, Date.now() + COST_WAIT_MS);
   }
 
   private async reportError(token: string, err: unknown, settings = false): Promise<void> {
     try {
-      const message =
-        err instanceof ConfigurationError || err instanceof BudgetError
-          ? err.message
-          : err instanceof GatewayError && err.status === 402
-            ? "AI Gatewayの残高が不足しています。クレジットを確認してください。"
-            : err instanceof GatewayError && err.status === 401
-              ? "AI GatewayのAPIキーを確認してください。"
-              : MSG_GENERIC_ERROR;
+      const message = errorMessage(err);
       if (settings) await this.discord().sendFollowup(token, message, true);
       else await this.discord().patchOriginal(token, message);
       await this.markAnswered();
@@ -330,6 +427,16 @@ export class JobDO extends DurableObject<Env> {
       console.error("could not report the failure to Discord", nested, "original:", err);
     }
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof ConfigurationError || err instanceof BudgetError
+    ? err.message
+    : err instanceof GatewayError && err.status === 402
+      ? "AI Gatewayの残高が不足しています。クレジットを確認してください。"
+      : err instanceof GatewayError && err.status === 401
+        ? "AI GatewayのAPIキーを確認してください。"
+        : MSG_GENERIC_ERROR;
 }
 
 function hasUrlSource(messages: AnthropicMessage[]): boolean {

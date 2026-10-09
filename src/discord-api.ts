@@ -11,6 +11,17 @@ export class DiscordError extends Error {
     super(`Discord API ${status}: ${body.slice(0, 300)}`);
     this.name = "DiscordError";
   }
+
+  /** For a 429: how long Discord asked us to wait. */
+  get retryAfterMs(): number | null {
+    if (this.status !== 429) return null;
+    try {
+      const seconds = Number(JSON.parse(this.body).retry_after);
+      return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1000) : null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 /**
@@ -56,7 +67,12 @@ export class DiscordClient {
   }
 
   /** Post an extra message on an interaction token. `wait=true` so the id comes back. */
-  sendFollowup(token: string, content: string, ephemeral: boolean): Promise<DiscordMessage> {
+  sendFollowup(
+    token: string,
+    content: string,
+    ephemeral: boolean,
+    components?: unknown[],
+  ): Promise<DiscordMessage> {
     return this.request(`${this.base}/webhooks/${this.appId}/${token}?wait=true`, {
       method: "POST",
       headers: JSON_HEADERS,
@@ -65,17 +81,34 @@ export class DiscordClient {
       body: JSON.stringify({
         content,
         flags: ephemeral ? EPHEMERAL : 0,
+        ...(components ? { components } : {}),
         allowed_mentions: NO_MENTIONS,
       }),
     });
   }
 
   /** Edit a message previously sent on this interaction token (original or followup). */
-  editMessage(token: string, messageId: string, content: string): Promise<DiscordMessage> {
+  editMessage(
+    token: string,
+    messageId: string,
+    content: string,
+    components?: unknown[],
+  ): Promise<DiscordMessage> {
     return this.request(`${this.base}/webhooks/${this.appId}/${token}/messages/${messageId}`, {
       method: "PATCH",
       headers: JSON_HEADERS,
-      body: JSON.stringify({ content, allowed_mentions: NO_MENTIONS }),
+      body: JSON.stringify({
+        content,
+        ...(components ? { components } : {}),
+        allowed_mentions: NO_MENTIONS,
+      }),
+    });
+  }
+
+  /** Read back a message sent on this interaction token; works for ephemeral ones too. */
+  getMessage(token: string, messageId: string): Promise<DiscordMessage> {
+    return this.request(`${this.base}/webhooks/${this.appId}/${token}/messages/${messageId}`, {
+      method: "GET",
     });
   }
 

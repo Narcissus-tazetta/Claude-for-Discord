@@ -37,6 +37,8 @@ export interface Interaction {
   channel_id?: string;
   user?: DiscordUser;
   member?: { user: DiscordUser };
+  /** For component interactions: the message the clicked component is attached to. */
+  message?: DiscordMessage;
   data?: {
     id?: string;
     name?: string;

@@ -5,6 +5,7 @@ import expandedReviewSnapshot from "../docs/model-review-2026-10-08.json";
 import {
   askAI,
   ConfigurationError,
+  costLabel,
   freeUnavailableMessage,
   normalizeModelPreference,
   PaidCalls,
@@ -1090,7 +1091,7 @@ describe("answer flow", () => {
     );
     expect(bodies.map((body) => body.model)).toEqual([first.id, second.id]);
     expect(bodies.every((body) => !body.tools)).toBe(true);
-    expect(answer).toContain("無料の回答");
+    expect(answer.text).toContain("無料の回答");
     expect(store.ledger.summary(Date.now()).total).toBe(0);
   });
   test("free Auto fails closed when prices increase, tiers cost money or candidates are untested", async () => {
@@ -1146,7 +1147,8 @@ describe("answer flow", () => {
     expect(bodies[0].tools).toBeUndefined();
     expect(bodies[1].tool_choice).toBe("auto");
     // Gateway reported no tool counts, so the offered search is shown as having run once.
-    expect(answer).toContain("概算 $0.00760");
+    expect(costLabel(answer.cost, "usd", 158.1)).toBe("概算 $0.00760");
+    expect(answer.cost.generationIds).toEqual(["g1", "g2"]);
     const pending = store.ledger.pending(10);
     expect(pending.map((row) => row.generationId)).toEqual(["g1", "g2"]);
     for (const row of pending) store.ledger.resolve(row.id, 0.001);
@@ -1163,12 +1165,13 @@ describe("answer flow", () => {
           ],
           usage: { prompt_tokens: 1000, completion_tokens: 500 },
         })) as any);
-      return await askAI(
+      const answer = await askAI(
         [{ role: "user", content: [{ type: "text", text: "最新情報を教えて" }] }],
         { ...prefs, effort: "high" },
         env,
         state(approved([model()])) as any,
       );
+      return costLabel(answer.cost, "usd", 158.1);
     };
     expect(await answerWith({ cost: "0.0123" })).toContain("概算 $0.01230");
     expect(await answerWith({ gatewayToolCalls: { perplexity_search: 0 } })).toContain(
@@ -1214,7 +1217,7 @@ describe("answer flow", () => {
       store as any,
     );
     expect(ids).toEqual([first.id, second.id]);
-    expect(answer).toContain(second.id);
+    expect(answer.model).toBe(second.id);
     const [pending] = store.ledger.pending(10);
     store.ledger.resolve(pending.id, 0.001);
     expect(store.ledger.summary(Date.now()).total).toBeCloseTo(0.001);
@@ -1235,6 +1238,68 @@ describe("answer flow", () => {
     registry.refreshedAt = Date.now() - 3 * DAY_MS;
     await expect(askAI([], prefs, env, state(registry) as any)).rejects.toThrow("料金を更新");
     expect(fetcher).not.toHaveBeenCalled();
+  });
+  test("streamed answers report progress, split SSE lines, usage and in-band errors", async () => {
+    const sse = (parts: string[]) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            for (const part of parts) controller.enqueue(new TextEncoder().encode(part));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    const event = (data: unknown) => `data: ${JSON.stringify(data)}\n\n`;
+    const whole =
+      event({
+        id: "gen-1",
+        model: "google/gemini-test",
+        choices: [{ delta: { content: "こん" } }],
+      }) +
+      event({ choices: [{ delta: { content: "にちは" }, finish_reason: "stop" }] }) +
+      event({ choices: [], usage: { prompt_tokens: 1000, completion_tokens: 500 } }) +
+      "data: [DONE]\n\n";
+    const bodies: any[] = [];
+    spyOn(globalThis, "fetch").mockImplementation((async (_url: string, options?: RequestInit) => {
+      bodies.push(JSON.parse(String(options?.body)));
+      // Split mid-line and mid-character to exercise buffering.
+      return sse([whole.slice(0, 50), whole.slice(50, 51), whole.slice(51)]);
+    }) as any);
+    const statuses: string[] = [];
+    const texts: string[] = [];
+    const answer = await askAI(
+      [{ role: "user", content: [{ type: "text", text: "こんにちは" }] }],
+      { ...prefs, effort: "high" },
+      env,
+      state(approved([model()])) as any,
+      {
+        status: async (text) => {
+          statuses.push(text);
+        },
+        text: async (partial) => {
+          texts.push(partial);
+        },
+      },
+    );
+    expect(bodies[0].stream).toBe(true);
+    expect(bodies[0].stream_options).toEqual({ include_usage: true });
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(texts).toEqual(["こん", "こんにちは"]);
+    expect(answer.text).toBe("こんにちは");
+    expect(answer.cost.generationIds).toEqual(["gen-1"]);
+    expect(costLabel(answer.cost, "usd", 158.1)).toBe("概算 $0.00130");
+
+    mock.restore();
+    spyOn(globalThis, "fetch").mockImplementation((async () =>
+      sse([
+        event({ id: "gen-2", choices: [{ delta: { content: "途中" } }] }),
+        event({ error: { message: "upstream failed" } }),
+      ])) as any);
+    const client = new GatewayClient(env);
+    await expect(
+      client.complete(model(), [{ role: "user", content: "x" }], 100, {}, async () => {}),
+    ).rejects.toMatchObject({ status: 502 });
   });
   test("401 and uncertain failures never fall back to another paid request", async () => {
     const fetcher = spyOn(globalThis, "fetch").mockImplementation((async () =>

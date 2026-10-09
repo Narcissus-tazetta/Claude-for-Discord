@@ -825,11 +825,42 @@ describe("Discord delivery and regeneration", () => {
       "あなたの設定画面ではありません",
     );
   });
-  test("slash answers keep every chunk private, persist replay context, and regenerate with new prefs", async () => {
+  /** Webhook messages by id; `@original` resolves per interaction token. */
+  function fakeDiscord() {
+    const messages = new Map<string, any>();
+    const originals = new Map<string, string>();
+    const log: { method: string; id: string; body: any }[] = [];
+    let next = 0;
+    const handle = (url: string, options?: RequestInit) => {
+      const method = options?.method ?? "GET";
+      const body = options?.body ? JSON.parse(String(options.body)) : null;
+      const [, token, target] = url.match(/webhooks\/app\/([^/?]+)(?:\/messages\/([^?]+))?/) ?? [];
+      let id: string;
+      if (method === "POST") id = String(++next);
+      else if (target === "@original") {
+        id = originals.get(token) ?? String(++next);
+        originals.set(token, id);
+      } else id = target;
+      log.push({ method, id, body });
+      if (method !== "GET")
+        messages.set(id, {
+          ...messages.get(id),
+          ...body,
+          id,
+          channel_id: "channel",
+          author: { id: "app" },
+          attachments: [],
+        });
+      return json(messages.get(id));
+    };
+    return { messages, log, handle };
+  }
+
+  test("answers stream in with a status, end with buttons, and gain the billed cost later", async () => {
     const { state, env, kv, ready } = setup();
     await ready();
     kv.set("ai_registry", registry());
-    const deliveries: any[] = [];
+    const discord = fakeDiscord();
     let paid = 0;
     spyOn(globalThis, "fetch").mockImplementation((async (url: string, options?: RequestInit) => {
       if (url.includes("/generation")) return json({ data: { total_cost: 0.001 } });
@@ -846,17 +877,7 @@ describe("Discord delivery and regeneration", () => {
           ],
         });
       }
-      if (url.startsWith("https://discord.mock/")) {
-        const body = JSON.parse(String(options?.body));
-        deliveries.push({ url, body });
-        return json({
-          id: String(deliveries.length),
-          content: body.content,
-          channel_id: "channel",
-          author: { id: "app" },
-          attachments: [],
-        });
-      }
+      if (url.startsWith("https://discord.mock/")) return discord.handle(url, options);
       throw new Error("unexpected request");
     }) as any);
     const jobStorage = context();
@@ -870,23 +891,96 @@ describe("Discord delivery and regeneration", () => {
       attachment: null,
     });
     await job.alarm();
-    expect(deliveries).toHaveLength(2);
-    expect(deliveries[1].body.flags).toBe(64);
-    expect(deliveries.every((d) => d.body.allowed_mentions.parse.length === 0)).toBe(true);
+    expect(discord.log[0].body.content).toMatch(
+      /^\*\*Q:\*\* こんにちは\n\n\*\*A:\*\*\n-# .+… \d+秒$/,
+    );
+    const [first, second] = [discord.messages.get("1"), discord.messages.get("2")];
+    expect(first.content.startsWith("**Q:** こんにちは")).toBe(true);
+    expect(first.components).toEqual([]);
+    expect(second.flags).toBe(64);
+    expect(second.content).toEndWith(`-# モデル: ${model().id}`);
+    expect(second.components[0].components.map((c: any) => c.custom_id)).toEqual([
+      "ans:regen",
+      "ans:cont",
+    ]);
+    expect(discord.log.every((d) => !d.body || d.body.allowed_mentions.parse.length === 0)).toBe(
+      true,
+    );
     const record = state.getRegenRecord("2");
     expect(record?.chunkIds).toEqual(["1", "2"]);
     expect(JSON.parse(record?.messagesJson ?? "[]")[0].content[0].text).toBe("こんにちは");
+
+    // The billing record exists, so the next alarm appends the confirmed cost.
+    expect(jobStorage.kv.get("costWatch")).toBeDefined();
+    await job.alarm();
+    expect(discord.messages.get("2").content).toMatch(/｜費用 ¥0\.16$/);
+    expect(discord.messages.get("2").components).toHaveLength(1);
+    expect(jobStorage.kv.size).toBe(0);
+
     state.setPref("123", "model", model().id);
     const regenStorage = context();
     const regen = new JobDO(regenStorage.ctx as any, env);
     await regen.start({ kind: "regen", token: "regen", userId: "123", messageId: "2" });
     await regen.alarm();
     expect(paid).toBe(2);
-    expect(deliveries[2].body.content).toContain("再生成した回答です。");
-    expect(deliveries[3].body.content).toContain("再生成後は不要");
+    expect(discord.messages.get("1").content).toContain("再生成した回答です。");
+    expect(discord.messages.get("1").components).toHaveLength(1);
+    expect(discord.messages.get("2").content).toContain("再生成後は不要");
+    expect(discord.messages.get("2").components).toEqual([]);
+    const ack = discord.messages.get("3");
+    expect(ack.content).toBe("🔄 再生成しました。");
     expect(state.getRegenRecord("1")?.chunkIds).toEqual(["1"]);
     expect(state.getRegenRecord("2")).toBeNull();
   });
+
+  test("an unconfirmed cost falls back to the estimate, and a replaced answer is left alone", async () => {
+    const { env, kv, ready } = setup();
+    await ready();
+    kv.set("ai_registry", registry());
+    const discord = fakeDiscord();
+    spyOn(globalThis, "fetch").mockImplementation((async (url: string, options?: RequestInit) => {
+      if (url.includes("/generation")) return json({}, 404);
+      if (url.includes("/chat/completions"))
+        return json({
+          id: "g",
+          model: model().id,
+          choices: [{ message: { content: "回答" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1000, completion_tokens: 500 },
+        });
+      if (url.startsWith("https://discord.mock/")) return discord.handle(url, options);
+      throw new Error("unexpected request");
+    }) as any);
+    const run = async () => {
+      const storage = context();
+      const job = new JobDO(storage.ctx as any, env);
+      await job.start({
+        kind: "slash",
+        token: `tok${Math.random()}`,
+        userId: "123",
+        ephemeral: false,
+        prompt: "q",
+        attachment: null,
+      });
+      await job.alarm();
+      await job.alarm();
+      // Billing is still missing: keep polling until the deadline.
+      expect(storage.kv.get("costWatch").attempt).toBe(1);
+      storage.kv.get("costWatch").deadline = 0;
+      return { job, storage };
+    };
+    const late = await run();
+    const id = late.storage.kv.get("costWatch").messageId;
+    await late.job.alarm();
+    expect(discord.messages.get(id).content).toMatch(/｜概算 ¥0\.0\d+$/);
+
+    const replaced = await run();
+    const otherId = replaced.storage.kv.get("costWatch").messageId;
+    discord.messages.get(otherId).content = "再生成された別の回答";
+    await replaced.job.alarm();
+    expect(discord.messages.get(otherId).content).toBe("再生成された別の回答");
+    expect(replaced.storage.kv.size).toBe(0);
+  });
+
   test("forged model selections and someone else's settings do not change prefs", async () => {
     const { state, env, ready, kv } = setup();
     await ready();

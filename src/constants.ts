@@ -40,6 +40,7 @@ export const MSG_ATTACHMENT_UNREADABLE =
 // Attachments are stored as signed Discord CDN URLs, which expire. A
 // regenerate of an old answer can therefore fail where the original succeeded.
 export const MSG_ATTACHMENT_EXPIRED = "添付ファイルの有効期限が切れているため再生成できません。";
+export const MSG_ANSWER_INTERRUPTED = "⚠️ 回答の途中で止まりました：";
 export const MSG_NO_TEXT = "(応答にテキストが含まれていませんでした)";
 export const MSG_CONTINUATION_ANCHOR = "(以下は以前のやり取りの続きです)";
 
