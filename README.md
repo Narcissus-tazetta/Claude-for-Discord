@@ -21,6 +21,7 @@ Cloudflare Workers + Durable Objects SQLite上で動作します。DiscordのUse
 - 基本設定ではAuto/手動、回答の質 / コスト、検索・リンク、公開範囲を選べます。現在の選択を表示し、変更は即保存・次の質問から反映されます。
 - 「Auto（無料）」は、Gatewayの入出力料金と長文料金がすべて0の、動作テストに合格したモデルだけを選びます。各社の無料モデルも評価対象にします。別料金が発生するWeb検索・リンク読み込みと有料の質問分類は使わず、失敗時も無料モデルだけで再試行します。評価待ち・料金変更・無料提供終了で候補がなくなった場合は案内を表示し、有料モデルへ自動では切り替えません。回答の質 / コストの設定で無料候補同士の選び方を調整できます。
 - 手動モデルは別画面でGPT・Claude・Gemini・その他のAIに絞り込み、ページを切り替えて選べます。Gatewayで利用できる料金・文脈上限の明確な言語モデルが対象です。新モデルやPreviewも手動で試せます。
+- `ANTHROPIC_API_KEY` を設定している場合、手動で選んだClaude（Fable・Opus・Sonnet・Haikuの各世代）はGatewayではなくAnthropic APIへ直接問い合わせ、回答末尾のモデル名に「（Anthropic API）」と表示します。検索・リンク読み込みもAnthropicのツールを使います。費用は回答時点で確定額として表示し、月の予算にも計上します。キーの残高切れ・無効化などで受け付けられなかった場合は、同じ質問をGateway経由で回答します（表示は付きません）。Autoは常にGatewayを使います。
 - クレジット購入後や新モデル追加時は「モデル一覧を更新」で利用可能なモデルをすぐに取り直せます。この操作はモデル情報だけを取得し、有料の品質評価や回答APIは呼びません。
 - モデルごとに入力1,000＋出力500トークンの場合の参考費用を表示します。表示通貨は「費用の表示」ボタンで円/ドルを切り替えられます（既定は円、ユーザーごとに保存）。設定画面と回答末尾の費用表示に反映されます。円換算は固定の参考レートを明記し、`AI_USD_JPY_RATE`で変更できます。初期値158.10は[日銀の2026-10-07 17:00公表値](https://www.boj.or.jp/en/statistics/market/forex/fxdaily/fxlist/fx261007.pdf)を丸めた参考値です。実際の請求はUSDです。手動選択後は100回分と100万トークン単価も確認できます。思考・添付・検索・長い履歴の費用はこの概算から増減します。
 - 個人設定は永続化されます。既存ユーザーの選択は維持し、新規ユーザーはAutoになります。以前のClaudeモデルIDはGateway形式へ変換します。
@@ -123,6 +124,7 @@ bun run dev
 bunx wrangler secret put DISCORD_BOT_TOKEN
 bunx wrangler secret put AI_GATEWAY_API_KEY
 bunx wrangler secret put ALLOWED_USER_IDS
+bunx wrangler secret put ANTHROPIC_API_KEY  # 任意。手動選択のClaudeを直接呼ぶ
 bun run deploy
 ```
 
