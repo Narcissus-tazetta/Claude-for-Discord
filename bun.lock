@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "claude-for-discord",
+      "name": "ai-for-discord",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.132.1",
       },
